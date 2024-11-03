@@ -1,0 +1,11 @@
+defusedxml
+requests
+upnpy
+pillow
+flit
+black
+flake8
+blacken-docs
+python-didl-lite
+IPython
+traitlets

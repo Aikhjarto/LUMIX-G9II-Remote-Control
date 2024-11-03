@@ -1,0 +1,45 @@
+[build-system]
+requires = [
+  "setuptools >= 40.9.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name= "LumixG9IIRemoteControl"
+authors = [{name = "Thomas Wagner", email = "wagner-thomas@gmx.at"},]
+description = "Pure Python remote control scripts for Panasonic Lumix DC-G9II"
+readme = "README.md"
+license = {file = "LICENSE.md"}
+keywords = ["Panasonic Lumix G9II",]
+classifiers = [
+	"Development Status :: 3 - Alpha",
+	"License :: OSI Approved",
+	"License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+	"Programming Language :: Python :: 3",
+	"Topic :: Multimedia :: Graphics :: Capture",
+	"Topic :: Multimedia :: Video :: Capture",
+	"Topic :: Utilities",
+]
+requires-python = ">=3.8"
+dependencies = [
+	"defusedxml",
+	"requests",
+	"upnpy",
+	"pillow",
+	"python-didl-lite",
+	"IPython",
+	"traitlets",]
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "LumixG9IIRemoteControl.__version__"} 
+
+[tool.flake8]
+max-line-length=88
+
+[tool.isort]
+profile = "black"
+
+[project.urls]
+Code = "https://github.com/Aikhjarto/LumixG9IIRemoteControl"
+Issues = "https://github.com/Aikhjarto/LumixG9IIRemoteControl/issues"
