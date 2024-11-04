@@ -28,7 +28,8 @@ dependencies = [
 	"pillow",
 	"python-didl-lite",
 	"IPython",
-	"traitlets",]
+	"traitlets",
+	"pyzmq"]
 dynamic = ["version"]
 
 [tool.setuptools.dynamic]

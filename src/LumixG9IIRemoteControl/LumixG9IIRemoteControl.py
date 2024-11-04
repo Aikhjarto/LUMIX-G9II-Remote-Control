@@ -1,6 +1,6 @@
-import math
 import argparse
 import logging
+import math
 import pprint
 import subprocess
 import sys
@@ -15,6 +15,7 @@ import defusedxml.ElementTree
 import requests
 import upnpy.ssdp.SSDPDevice
 import upnpy.utils
+import zmq
 from didl_lite import didl_lite
 
 from LumixG9IIRemoteControl.helpers import get_local_ip
@@ -59,7 +60,7 @@ class LumixG9IIRemoteControl:
         local_device_name: str = "DummyDevice",
         number_retry_if_busy=10,
         host=None,
-        auto_connect=True,
+        auto_connect=False,
     ):
         self._headers = {"User-Agent": "LUMIX Sync", "Connection": "Keep-Alive"}
 
@@ -101,8 +102,34 @@ class LumixG9IIRemoteControl:
         self._http_server: Server = None
         self._event_thread: threading.Thread = None
 
+        self._zmq_context = zmq.Context()
+        self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
+        self._zmq_socket.connect("tcp://localhost:5556")
+        self._zmq_thd = threading.Thread(
+            target=self._zmq_consumer_function, daemon=True
+        )
+        self._zmq_thd.start()
+
         if auto_connect:
             self.connect(host)
+
+    def _zmq_consumer_function(self):
+        while True:
+            try:
+                event = self._zmq_socket.recv_pyobj()
+                logger.info("Received via zmq: %s", event)
+                if "streamviewer_event" in event:
+                    event_type = event["streamviewer_event"]
+                    x = event["x"]
+                    y = event["y"]
+                    if event_type == "click":
+                        self.send_touch_coordinate(x, y)
+                    else:
+                        # 'drag_start', 'drag_continue', 'drag_stop'
+                        value = event_type.split("_")[-1]
+                        self.send_touch_drag(value, x, y)
+            except Exception as e:
+                logger.error(traceback.format_exception(e))
 
     def __str__(self):
         try:
@@ -336,6 +363,24 @@ class LumixG9IIRemoteControl:
         )
         self.touch_type = self._check_ret_ok(ret)
         return self.touch_type
+
+    @_requires_connected
+    def send_touch_drag(self, value: str, x: int, y: int):
+        params = {
+            "mode": "camctrl",
+            "type": "touch_trace",
+            "value": value,
+            "value2": f"{x:d}/{y:d}",
+        }
+
+        ret = requests.get(
+            self._cam_cgi,
+            headers=self._headers,
+            params=params,
+        )
+        data = self._check_ret_ok(ret)
+        logger.info("drag %s move to coordinates %s", value, data)
+        return data
 
     @_requires_connected
     def send_touch_trace(self, coordinate_list: List[Tuple[int, int]]):
@@ -703,7 +748,9 @@ class LumixG9IIRemoteControl:
                     "indicating that operation is not possible in current state of the camera"
                 )
             else:
-                raise RuntimeError(f"{ret.url} resulted in {state}. Full error: {ret.text}")
+                raise RuntimeError(
+                    f"{ret.url} resulted in {state}. Full error: {ret.text}"
+                )
 
     def set_local_language(self, language_code=None):
         """
@@ -870,7 +917,7 @@ class LumixG9IIRemoteControl:
             params={"mode": "setsetting", "type": "raw_img_send", "value": "enable"},
         )
         self._check_ret_ok(ret)
-    
+
     def get_capability(self):
         # TODO analyze whats in there (it is the same in rec and play mode)
         ret = requests.get(
@@ -919,15 +966,17 @@ class LumixG9IIRemoteControl:
     @_requires_connected
     def query_all_items(self):
         # TODO: continue
-        
+
         self.raw_img_send_enable()
         content_info_dict = self.get_content_info()
         # {"current_position": 126, "total_content_number": 388, "content_number": 127}
         N_bulk = 50
-        
-        for i in range(math.ceil(content_info_dict["total_content_number"]/N_bulk)): 
-            print(i, self.query_items(StartingIndex=i*N_bulk, RequestedCount=N_bulk)[-2:])
-        
+
+        for i in range(math.ceil(content_info_dict["total_content_number"] / N_bulk)):
+            print(
+                i,
+                self.query_items(StartingIndex=i * N_bulk, RequestedCount=N_bulk)[-2:],
+            )
 
     @_requires_connected
     def query_items(
@@ -938,7 +987,7 @@ class LumixG9IIRemoteControl:
         rating_list: Tuple[int] = (0,),
         object_id_str="0",
         recgroup_type_string=None,
-        auto_set_play_mode = True,
+        auto_set_play_mode=True,
     ):
         """
         Parameters
@@ -971,9 +1020,9 @@ class LumixG9IIRemoteControl:
 
         if auto_set_play_mode:
             state = self.get_state()
-            if state["cammode"] != 'play':
+            if state["cammode"] != "play":
                 self.set_playmode()
-        
+
         filter_list = []
         if age_in_days:
             filter_list.append(f"type=date,value=relative,value2={age_in_days:d}")
@@ -1015,8 +1064,12 @@ class LumixG9IIRemoteControl:
                 recgroup_type_string
             )
         if filter_string is not None:
-           xml.etree.ElementTree.SubElement(browse, "pana:X_Filter").text = filter_string
-        xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = "type=date,value=ascend"
+            xml.etree.ElementTree.SubElement(browse, "pana:X_Filter").text = (
+                filter_string
+            )
+        xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = (
+            "type=date,value=ascend"
+        )
 
         xml.etree.ElementTree.indent(envelop, space=" ")
         xml_string = xml.etree.ElementTree.tostring(
@@ -1045,7 +1098,14 @@ class LumixG9IIRemoteControl:
             NumberReturned = int(
                 soap_xml.find(".//NumberReturned").text
             )  # max 50, even if more where requested
-            return soap_xml, didl_lite_xml, didl_object, TotalMatches, NumberReturned, ret.text.find('container')
+            return (
+                soap_xml,
+                didl_lite_xml,
+                didl_object,
+                TotalMatches,
+                NumberReturned,
+                ret.text.find("container"),
+            )
         else:
             logger.error(
                 "Request %s\n resulted in %s \n with answer %s\nEnsure you are in play mode and your filters are correct.",
@@ -1104,7 +1164,7 @@ if __name__ == "__main__":
     else:
         import IPython
 
-        g9ii = LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host=args.host)
+        g9ii = LumixG9IIRemoteControl(auto_connect=args.auto_connect, host=args.host)
         IPython.embed(header=header)
     # try:
     #     g9ii.connect(host=args.host)

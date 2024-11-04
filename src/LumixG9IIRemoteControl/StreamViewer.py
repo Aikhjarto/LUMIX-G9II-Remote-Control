@@ -5,6 +5,7 @@ import logging
 import threading
 import tkinter as tk
 
+import zmq
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from LumixG9IIRemoteControl.StreamReceiver import asyncio_main_thread_function
@@ -13,7 +14,7 @@ from .helpers import get_local_ip
 
 logging.basicConfig()
 logger = logging.getLogger()
-logger.setLevel("INFO")
+logger.setLevel("DEBUG")
 
 
 class StreamViewerWidget(tk.Frame):
@@ -44,18 +45,32 @@ class StreamViewerWidget(tk.Frame):
         self.img_label = tk.Label(master, image=self.photo_image)
         self.img_label.pack()
 
+        # TODO: closing GUI won't work if zmq has data in it's queue
+        self._zmq_context = zmq.Context()
+        self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
+        self._zmq_socket.bind("tcp://*:5556")
+
         # Note: Single button click always initiates drag
         self.img_label.bind("<ButtonPress-1>", self._on_button_press)
         self.img_label.bind("<B1-Motion>", self._on_drag)
         self.img_label.bind("<ButtonRelease-1>", self._on_button_release)
 
     def _on_button_press(self, event):
-        self._last_button_press_coordinates = (event.x, event.y)
+        x = max(0, min(1000, int(1000 * event.x / self.img_label.winfo_width())))
+        y = max(0, min(1000, int(1000 * event.y / self.img_label.winfo_height())))
+        self._last_button_press_coordinates = (x, y)
         self._drag_start_was_sent = False
 
     def _on_drag(self, event):
         if not self._drag_start_was_sent:
-            # TODO: send self._last_button_press_coordinates as drag start
+            # send self._last_button_press_coordinates as drag start
+            self._zmq_socket.send_pyobj(
+                {
+                    "streamviewer_event": "drag_start",
+                    "x": self._last_button_press_coordinates[0],
+                    "y": self._last_button_press_coordinates[1],
+                }
+            )
             logger.debug(
                 "Drag start: %s/%s",
                 self._last_button_press_coordinates[0],
@@ -63,28 +78,40 @@ class StreamViewerWidget(tk.Frame):
             )
             self._drag_start_was_sent = True
 
-        # TODO: send current drag position
-        logger.debug(
-            "Drag current position: %s/%s",
-            int(1000 * event.x / self.img_label.winfo_width()),
-            int(1000 * event.y / self.img_label.winfo_height()),
+        # send current drag position
+        x = max(0, min(1000, int(1000 * event.x / self.img_label.winfo_width())))
+        y = max(0, min(1000, int(1000 * event.y / self.img_label.winfo_height())))
+        self._zmq_socket.send_pyobj(
+            {
+                "streamviewer_event": "drag_continue",
+                "x": x,
+                "y": y,
+            }
         )
+        logger.debug("Drag current position: %s/%s", x, y)
 
     def _on_button_release(self, event):
+        x = max(0, min(1000, int(1000 * event.x / self.img_label.winfo_width())))
+        y = max(0, min(1000, int(1000 * event.y / self.img_label.winfo_height())))
         if self._drag_start_was_sent:
-            # TODO: sent drag stop
-            logger.debug(
-                "Drag stop: %s/%s",
-                int(1000 * event.x / self.img_label.winfo_width()),
-                int(1000 * event.y / self.img_label.winfo_height()),
+            # sent drag stop
+            self._zmq_socket.send_pyobj(
+                {
+                    "streamviewer_event": "drag_stop",
+                    "x": x,
+                    "y": y,
+                }
             )
+            logger.debug("Drag stop: %s/%s", x, y)
         else:
-            # TODO send click
-            logger.debug(
-                "Click: %s/%s",
-                int(1000 * event.x / self.img_label.winfo_width()),
-                int(1000 * event.y / self.img_label.winfo_height()),
+            self._zmq_socket.send_pyobj(
+                {
+                    "streamviewer_event": "click",
+                    "x": x,
+                    "y": y,
+                }
             )
+            logger.debug("Click: %s/%s", x, y)
 
         self._drag_start_was_sent = False
 
