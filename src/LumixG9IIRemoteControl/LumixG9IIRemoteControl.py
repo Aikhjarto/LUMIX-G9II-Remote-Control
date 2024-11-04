@@ -315,8 +315,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "capability"},
         )
-        self._check_ret_ok(ret)
-        self._capability_tree = defusedxml.ElementTree.fromstring(ret.text)
+        self._capability_tree = self._check_ret_ok(ret)
 
     @_requires_connected
     def _get_allmenu(self):
@@ -325,8 +324,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "allmenu"},
         )
-        self._check_ret_ok(ret)
-        self._allmenu_tree = defusedxml.ElementTree.fromstring(ret.text)
+        self._allmenu_tree = self._check_ret_ok(ret)
 
     @_requires_connected
     def _get_curmenu(self):
@@ -335,8 +333,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "curmenu"},
         )
-        self._check_ret_ok(ret)
-        self._curmenu_tree = defusedxml.ElementTree.fromstring(ret.text)
+        self._curmenu_tree = self._check_ret_ok(ret)
         self._curmenu_list = [i.attrib for i in self._curmenu_tree[1][:]]
 
     @_requires_connected
