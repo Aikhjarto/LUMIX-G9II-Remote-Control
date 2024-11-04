@@ -62,6 +62,9 @@ class LumixG9IIRemoteControl:
         host=None,
         auto_connect=False,
     ):
+        self._auto_connect = auto_connect
+        self.host = host
+
         self._headers = {"User-Agent": "LUMIX Sync", "Connection": "Keep-Alive"}
 
         # caches for camera capabilities
@@ -147,7 +150,10 @@ class LumixG9IIRemoteControl:
     def _requires_connected(func):
         def _decorated(*args, **kwargs):
             if not args[0]._cam_cgi:
-                raise RuntimeError("Not connected to camera. Use connect() first")
+                if not args[0]._auto_connect:
+                    raise RuntimeError("Not connected to camera. Use connect() first")
+                else:
+                    args[0].connect(args[0].host)
             return func(*args, **kwargs)
 
         return _decorated
@@ -156,6 +162,16 @@ class LumixG9IIRemoteControl:
     def cached_properties(self):
         if self._http_server:
             return self._http_server.cached_properties
+
+    @property
+    def host(self):
+        return self._host
+
+    @host.setter
+    def host(self, host):
+        self._host = host
+        self._cam_cgi = f"http://{self._host}/cam.cgi"
+        return self._host
 
     def connect(self, host=None):
         """
@@ -283,6 +299,7 @@ class LumixG9IIRemoteControl:
 
         return self.device_info_dict
 
+    @_requires_connected
     def _get_capability(self):
         ret = requests.get(
             self._cam_cgi,
@@ -292,6 +309,7 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
         self._capability_tree = defusedxml.ElementTree.fromstring(ret.text)
 
+    @_requires_connected
     def _get_allmenu(self):
         ret = requests.get(
             self._cam_cgi,
@@ -301,6 +319,7 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
         self._allmenu_tree = defusedxml.ElementTree.fromstring(ret.text)
 
+    @_requires_connected
     def _get_curmenu(self):
         ret = requests.get(
             self._cam_cgi,
