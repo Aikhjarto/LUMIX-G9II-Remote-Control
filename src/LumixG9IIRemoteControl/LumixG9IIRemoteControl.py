@@ -291,12 +291,6 @@ class LumixG9IIRemoteControl:
             key = i.tag[i.tag.find("}") + 1 :]
             self.device_info_dict[key] = i.text
 
-        # for key in ( 'UDN', 'pana:X_FirmVersion'):
-        #     self.device_info_dict[key] = (et.find("{urn:schemas-upnp-org:device-1-0}device")
-        #     .find(f"{{urn:schemas-upnp-org:device-1-0}}{key}")
-        #     .text
-        #     )
-
         return self.device_info_dict
 
     @_requires_connected
