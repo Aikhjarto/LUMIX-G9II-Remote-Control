@@ -123,7 +123,7 @@ class StreamViewerWidget(tk.Frame):
         # as it would result in flickerung
         img = Image.open(io.BytesIO(image_data))
         logging.debug(
-            "Receive image of size %s bytes and %s pixels", image_data, img.size
+            "Receive image of size %s bytes and %s pixels", len(image_data), img.size
         )
         aaa = ImageTk.PhotoImage(img)
         self.img_label.configure(image=aaa)

@@ -58,10 +58,10 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_NOTIFY(self):
         payload = self.rfile.read(int(self.headers.get("content-length")))
         logger.debug(
-            "NOTIFY Message %s",
-            pprint.pformat(
-                {"path": self.path, "headers": self.headers, "payload": payload}
-            ),
+            "NOTIFY Message for path %s\nHeaders: \n%s\nPayload:\n%s\n",
+            self.path,
+            self.headers,
+            payload,
         )
         if (
             self.headers["NT"] == "upnp:event"
@@ -124,9 +124,9 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
             else:
                 logger.error(
-                    "Unknown message %s",
-                    pprint.pformat(
-                        {"path": self.path, "headers": self.headers, "payload": payload}
-                    ),
+                    "Unknown message for path %s\nHeaders: \n%s\nPayload:\n%s\n",
+                    self.path,
+                    self.headers,
+                    payload,
                 )
             self.send_response_only(200)
