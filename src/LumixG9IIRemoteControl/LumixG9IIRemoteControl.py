@@ -309,7 +309,7 @@ class LumixG9IIRemoteControl:
         self.lens_dict = {
             "maximum_focal_length": data[6],
             "minmal_focal_length": data[7],
-            "bajonet": data[12],
+            "mount": data[12],
             "name": data[13],
             "manufactorer": data[14],
             "serial_number": data[15],
