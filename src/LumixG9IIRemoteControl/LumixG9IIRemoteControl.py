@@ -149,11 +149,23 @@ class LumixG9IIRemoteControl:
 
     def _requires_connected(func):
         def _decorated(*args, **kwargs):
-            if not args[0]._cam_cgi:
+            if "X-SESSION_ID" not in args[0]._headers:
                 if not args[0]._auto_connect:
                     raise RuntimeError("Not connected to camera. Use connect() first")
                 else:
                     args[0].connect(args[0].host)
+            return func(*args, **kwargs)
+
+        return _decorated
+
+    def _requires_host(func):
+        def _decorated(*args, **kwargs):
+            if args[0]._host:
+                if not args[0]._auto_connect:
+                    raise RuntimeError("Not connected to camera. Use connect() first")
+                else:
+                    logger.info("Camera hostname/IP not given. Searching for device")
+                    args[0].host = find_lumix_camera_via_sspd()
             return func(*args, **kwargs)
 
         return _decorated
@@ -269,6 +281,8 @@ class LumixG9IIRemoteControl:
         self._keepalive = False
         self._host = None
         self._cam_cgi = None
+        if "X-SESSION_ID" in self._headers:
+            del self._headers["X-SESSION_ID"]
 
     def _get_state_thread(self):
         while self._keepalive:
@@ -281,6 +295,7 @@ class LumixG9IIRemoteControl:
                 self.get_state()
                 self._get_curmenu()
 
+    @_requires_host
     def _get_device_info_via_ddd(self):
         ret = requests.get(f"http://{self._host}:60606/Lumix/Server0/ddd")
         assert ret.ok
@@ -897,7 +912,7 @@ class LumixG9IIRemoteControl:
         data = self.get_settings()
         pprint.pprint(data)
 
-    @_requires_connected
+    @_requires_host
     def _subscribe_to_camera_events(self):
         request = requests.Request(
             method="SUBSCRIBE",
@@ -964,6 +979,7 @@ class LumixG9IIRemoteControl:
         # TODO: make a more meaningful callback that calls get_lens on lens changes and curmenu on
         # mode changes and locks sending event while busy is active
 
+    @_requires_host
     def _run_event_capture_server_blocking(self, port):
 
         self._http_server = Server(
