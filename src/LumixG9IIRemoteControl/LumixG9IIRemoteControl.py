@@ -76,8 +76,6 @@ class LumixG9IIRemoteControl:
         self._touch_type_tree: defusedxml.ElementTree = None
 
         # static camera parameters
-        self._host: str = None
-        self._cam_cgi: str = None
         self.device_info_dict: Dict[str, str] = {}
 
         # volatile camera parameters
@@ -160,7 +158,7 @@ class LumixG9IIRemoteControl:
 
     def _requires_host(func):
         def _decorated(*args, **kwargs):
-            if args[0]._host:
+            if not args[0]._host:
                 if not args[0]._auto_connect:
                     raise RuntimeError("Not connected to camera. Use connect() first")
                 else:
@@ -195,12 +193,12 @@ class LumixG9IIRemoteControl:
             connected via the same router or accesspoint, the camera is accessible via
             the hostname "mlbel".
         """
-        if host is None:
-            logger.info("Camera hostname/IP not given. Searching for device")
-            host = find_lumix_camera_via_sspd()
-
-        self._host = host
-        self._cam_cgi = f"http://{self._host}/cam.cgi"
+        if self.host is None:
+            if host is None:
+                logger.info("Camera hostname/IP not given. Searching for device")
+                host = find_lumix_camera_via_sspd()
+            else:
+                self.host = host
 
         with self._request_lock:
             self._get_device_info_via_ddd()
