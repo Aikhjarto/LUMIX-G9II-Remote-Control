@@ -61,9 +61,16 @@ class LumixG9IIRemoteControl:
         number_retry_if_busy=10,
         host=None,
         auto_connect=False,
+        min_drag_continue_interval=0.2,
     ):
         self._auto_connect = auto_connect
         self.host = host
+
+        # Drag continue events can come from GUI more rapidly than Wi-Fi transport to 
+        # camera permits. Thus set a minimum interval an discard intermediate 
+        # coordinates.
+        self.min_drag_continue_interval: float = float(min_drag_continue_interval)
+        self._last_drag_continue_timestamp: float = None
 
         self._headers = {"User-Agent": "LUMIX Sync", "Connection": "Keep-Alive"}
 
@@ -118,16 +125,30 @@ class LumixG9IIRemoteControl:
         while True:
             try:
                 event = self._zmq_socket.recv_pyobj()
-                logger.info("Received via zmq: %s", event)
+                # logger.info("Received via zmq: %s", event)
                 if "streamviewer_event" in event:
                     event_type = event["streamviewer_event"]
                     x = event["x"]
                     y = event["y"]
                     if event_type == "click":
+                        self.lcd_on()
                         self.send_touch_coordinate(x, y)
                     else:
                         # 'drag_start', 'drag_continue', 'drag_stop'
+                        if event_type == "drag_start":
+                            self._last_drag_continue_timestamp = time.time()
+                        elif event_type == "drag_continue":
+                            if (
+                                time.time()
+                                > self._last_drag_continue_timestamp
+                                + self.min_drag_continue_interval
+                            ):
+                                self._last_drag_continue_timestamp = time.time()
+                            else:
+                                continue
+                        logger.info("Received via zmq: %s", event)
                         value = event_type.split("_")[-1]
+                        self.lcd_on()
                         self.send_touch_drag(value, x, y)
             except Exception as e:
                 logger.error(traceback.format_exception(e))
@@ -402,7 +423,7 @@ class LumixG9IIRemoteControl:
             params=params,
         )
         data = self._check_ret_ok(ret)
-        logger.info("drag %s move to coordinates %s", value, data)
+        logger.debug("drag %s move to coordinates %s", value, data)
         return data
 
     @_requires_connected
