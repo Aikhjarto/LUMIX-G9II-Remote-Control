@@ -45,7 +45,6 @@ class StreamViewerWidget(tk.Frame):
         self.img_label = tk.Label(master, image=self.photo_image)
         self.img_label.pack()
 
-        # TODO: closing GUI won't work if zmq has data in it's queue
         self._zmq_context = zmq.Context()
         self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
         self._zmq_socket.bind("tcp://*:5556")
@@ -61,10 +60,17 @@ class StreamViewerWidget(tk.Frame):
         self._last_button_press_coordinates = (x, y)
         self._drag_start_was_sent = False
 
+    def _send_pyobj(self, obj):
+        # like send_pyobj, but does not block when receiver is not present
+        try:
+            self._zmq_socket.send_pyobj(obj, zmq.NOBLOCK)
+        except zmq.error.Again as e:
+            pass
+
     def _on_drag(self, event):
         if not self._drag_start_was_sent:
             # send self._last_button_press_coordinates as drag start
-            self._zmq_socket.send_pyobj(
+            self._send_pyobj(
                 {
                     "streamviewer_event": "drag_start",
                     "x": self._last_button_press_coordinates[0],
@@ -81,13 +87,14 @@ class StreamViewerWidget(tk.Frame):
         # send current drag position
         x = max(0, min(1000, int(1000 * event.x / self.img_label.winfo_width())))
         y = max(0, min(1000, int(1000 * event.y / self.img_label.winfo_height())))
-        self._zmq_socket.send_pyobj(
+        self._send_pyobj(
             {
                 "streamviewer_event": "drag_continue",
                 "x": x,
                 "y": y,
             }
         )
+
         logger.debug("Drag current position: %s/%s", x, y)
 
     def _on_button_release(self, event):
@@ -95,7 +102,7 @@ class StreamViewerWidget(tk.Frame):
         y = max(0, min(1000, int(1000 * event.y / self.img_label.winfo_height())))
         if self._drag_start_was_sent:
             # sent drag stop
-            self._zmq_socket.send_pyobj(
+            self._send_pyobj(
                 {
                     "streamviewer_event": "drag_stop",
                     "x": x,
@@ -104,7 +111,7 @@ class StreamViewerWidget(tk.Frame):
             )
             logger.debug("Drag stop: %s/%s", x, y)
         else:
-            self._zmq_socket.send_pyobj(
+            self._send_pyobj(
                 {
                     "streamviewer_event": "click",
                     "x": x,
