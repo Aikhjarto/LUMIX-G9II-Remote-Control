@@ -66,8 +66,8 @@ class LumixG9IIRemoteControl:
         self._auto_connect = auto_connect
         self.host = host
 
-        # Drag continue events can come from GUI more rapidly than Wi-Fi transport to 
-        # camera permits. Thus set a minimum interval an discard intermediate 
+        # Drag continue events can come from GUI more rapidly than Wi-Fi transport to
+        # camera permits. Thus set a minimum interval an discard intermediate
         # coordinates.
         self.min_drag_continue_interval: float = float(min_drag_continue_interval)
         self._last_drag_continue_timestamp: float = None
@@ -125,8 +125,10 @@ class LumixG9IIRemoteControl:
         while True:
             try:
                 event = self._zmq_socket.recv_pyobj()
-                # logger.info("Received via zmq: %s", event)
-                if "streamviewer_event" in event:
+                logger.info("Received via zmq: %s", event)
+                if "capture" in event:
+                    self.capture()
+                elif "streamviewer_event" in event:
                     event_type = event["streamviewer_event"]
                     x = event["x"]
                     y = event["y"]
@@ -366,6 +368,9 @@ class LumixG9IIRemoteControl:
         for i in et.find("state"):
             self.camera_state_dict[i.tag] = i.text
 
+        self._zmq_socket.send_pyobj({'type': 'state_dict',
+                                     'data': self.camera_state_dict},
+                                       zmq.NOBLOCK)
         return self.camera_state_dict
 
     @_requires_connected

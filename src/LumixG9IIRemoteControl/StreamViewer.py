@@ -4,6 +4,7 @@ import io
 import logging
 import threading
 import tkinter as tk
+import traceback
 
 import zmq
 from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -45,9 +46,18 @@ class StreamViewerWidget(tk.Frame):
         self.img_label = tk.Label(master, image=self.photo_image)
         self.img_label.pack()
 
+        self.shutter_button = tk.Button(
+            master, text="capture", command=self._capture_event
+        )
+        self.shutter_button.pack(side="right")
+
         self._zmq_context = zmq.Context()
         self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
         self._zmq_socket.bind("tcp://*:5556")
+        self._zmq_thd = threading.Thread(
+            target=self._zmq_consumer_function, daemon=True
+        )
+        self._zmq_thd.start()
 
         # Note: Single button click always initiates drag
         self.img_label.bind("<ButtonPress-1>", self._on_button_press)
@@ -66,6 +76,25 @@ class StreamViewerWidget(tk.Frame):
             self._zmq_socket.send_pyobj(obj, zmq.NOBLOCK)
         except zmq.error.Again as e:
             pass
+
+    def _zmq_consumer_function(self):
+        while True:
+            try:
+                event = self._zmq_socket.recv_pyobj()
+                logger.info('%s %s', event, event['data']['cammode'])
+                print(dict(self.shutter_button))
+                if event['type'] == "state_dict":                    
+                    if event['data']['cammode'] == 'play':
+                        if self.shutter_button['state'] == tk.NORMAL:
+                            self.shutter_button['state'] = tk.DISABLED
+                    else:
+                        self.shutter_button['state'] = tk.NORMAL
+            except Exception as e:
+                logger.error(traceback.format_exception(e))
+
+
+    def _capture_event(self):
+        self._send_pyobj({"capture": "start"})
 
     def _on_drag(self, event):
         if not self._drag_start_was_sent:
