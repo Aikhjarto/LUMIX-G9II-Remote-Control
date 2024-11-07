@@ -121,6 +121,9 @@ class LumixG9IIRemoteControl:
         if auto_connect:
             self.connect(host)
 
+    def _publish_state_change(self, type, data):
+        self._zmq_socket.send_pyobj({"type": type, "data": data}, zmq.NOBLOCK)
+
     def _zmq_consumer_function(self):
         while True:
             try:
@@ -356,6 +359,7 @@ class LumixG9IIRemoteControl:
         )
         self._curmenu_tree = self._check_ret_ok(ret)
         self._curmenu_list = [i.attrib for i in self._curmenu_tree[1][:]]
+        self._publish_state_change("curment_list", self._curmenu_list)
 
     @_requires_connected
     def get_state(self):
@@ -368,9 +372,7 @@ class LumixG9IIRemoteControl:
         for i in et.find("state"):
             self.camera_state_dict[i.tag] = i.text
 
-        self._zmq_socket.send_pyobj({'type': 'state_dict',
-                                     'data': self.camera_state_dict},
-                                       zmq.NOBLOCK)
+        self._publish_state_change("state_dict", self.camera_state_dict)
         return self.camera_state_dict
 
     @_requires_connected
@@ -997,6 +999,7 @@ class LumixG9IIRemoteControl:
         busy is sent, when one of the camera is operated manually while a remote connection is still alive. When the manual operation stops, `update` and `lens_Atta` events are sent.
         """
         print(data)
+        self._publish_state_change("camera_event", data)
         # TODO: make a more meaningful callback that calls get_lens on lens changes and curmenu on
         # mode changes and locks sending event while busy is active
 
