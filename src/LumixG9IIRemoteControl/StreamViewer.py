@@ -71,17 +71,16 @@ class StreamViewerWidget(tk.Frame):
         while True:
             try:
                 event = self._zmq_socket.recv_pyobj()
-                logger.info('%s %s', event, event['data']['cammode'])
+                logger.info("%s %s", event, event["data"]["cammode"])
                 print(dict(self.shutter_button))
-                if event['type'] == "state_dict":                    
-                    if event['data']['cammode'] == 'play':
-                        if self.shutter_button['state'] == tk.NORMAL:
-                            self.shutter_button['state'] = tk.DISABLED
+                if event["type"] == "state_dict":
+                    if event["data"]["cammode"] == "play":
+                        if self.shutter_button["state"] == tk.NORMAL:
+                            self.shutter_button["state"] = tk.DISABLED
                     else:
-                        self.shutter_button['state'] = tk.NORMAL
+                        self.shutter_button["state"] = tk.NORMAL
             except Exception as e:
                 logger.error(traceback.format_exception(e))
-
 
     def _capture_event(self):
         self._send_pyobj({"capture": "start"})
