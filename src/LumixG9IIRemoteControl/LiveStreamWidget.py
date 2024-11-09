@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import signal
 import sys
+from typing import Tuple
 
 import PIL
 import PIL.Image
@@ -18,10 +19,10 @@ from .StreamReceiver import async_asyncio_thread
 
 class LiveStreamWidget(QLabel):
 
-    drag_start = Signal(QtCore.QPointF, name="drag_start")
-    drag = Signal(QtCore.QPointF, name="drag")
-    drag_stop = Signal(QtCore.QPointF, name="drag_stop")
-    click = Signal(QtCore.QPointF, name="click")
+    drag_start = Signal(QtCore.QPoint, name="drag_start")
+    drag = Signal(QtCore.QPoint, name="drag")
+    drag_stop = Signal(QtCore.QPoint, name="drag_stop")
+    click = Signal(QtCore.QPoint, name="click")
 
     def __init__(
         self,
@@ -36,7 +37,7 @@ class LiveStreamWidget(QLabel):
         pixmap.fromImage(self.image)
         self.setPixmap(QtGui.QPixmap.fromImage(image))
 
-        self._last_button_press_coordinates = None
+        self._last_button_press_coordinates: Tuple[int, int] = None
 
     def _event_to_x_y(self, event: QtGui.QMouseEvent):
         x = max(0, min(1000, int(1000 * event.position().x() / self.width())))
@@ -54,10 +55,10 @@ class LiveStreamWidget(QLabel):
         # print('move', event.position())
         if not self._drag_start_was_sent:
             # print("drag start", self._last_button_press_coordinates)
-            self.drag_start.emit(QtCore.QPointF(*self._last_button_press_coordinates))
+            self.drag_start.emit(QtCore.QPoint(*self._last_button_press_coordinates))
             self._drag_start_was_sent = True
         # print("drag", self._event_to_x_y(event))
-        self.drag.emit(QtCore.QPointF(*self._event_to_x_y(event)))
+        self.drag.emit(QtCore.QPoint(*self._event_to_x_y(event)))
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
         event.accept()
@@ -65,10 +66,10 @@ class LiveStreamWidget(QLabel):
         if self._drag_start_was_sent:
             # sent drag stop
             # print("drag stop", self._event_to_x_y(event))
-            self.drag_stop.emit(QtCore.QPointF(*self._event_to_x_y(event)))
+            self.drag_stop.emit(QtCore.QPoint(*self._event_to_x_y(event)))
         else:
             # print("click", self._event_to_x_y(event))
-            self.click.emit(QtCore.QPointF(*self._event_to_x_y(event)))
+            self.click.emit(QtCore.QPoint(*self._event_to_x_y(event)))
 
     def update_image(self, timestamp: datetime.datetime, image_data: bytes):
         print(timestamp)
