@@ -41,8 +41,7 @@ class ClientProtocol(asyncio.DatagramProtocol):
                 self.callback(datetime.datetime.now(), data[start_idx:])
 
             except Exception as e:
-                traceback.print_exc(e)
-                self.on_con_lost.set_result(True)
+                traceback.print_exception(e)
 
     def error_received(self, exc):
         print("Error received:", exc)
