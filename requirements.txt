@@ -10,3 +10,4 @@ python-didl-lite
 IPython
 traitlets
 pyzmq
+qasync

@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from LumixG9IIRemoteControl.StreamReceiver import asyncio_main_thread_function
 
-from .helpers import get_local_ip
+from .helpers import get_local_ip, get_waiting_for_stream_image
 
 logging.basicConfig()
 logger = logging.getLogger()
@@ -31,17 +31,7 @@ class StreamViewerWidget(tk.Frame):
 
         # https://web.archive.org/web/20201111190625/http://effbot.org/pyfaq/why-do-my-tkinter-images-not-appear.htm
         # Refereces to image buffers must be held manually, as tk.Label does not do it
-        self.image = Image.new("RGB", (640, 480), color="magenta")
-        draw = ImageDraw.Draw(self.image)
-        font = ImageFont.truetype("DejaVuSans.ttf", 23)
-        draw.text(
-            (320, 240),
-            "Waiting for camera to send stream",
-            (255, 255, 255),
-            align="center",
-            anchor="mm",
-            font=font,
-        )
+        self.image = get_waiting_for_stream_image()
         self.photo_image = ImageTk.PhotoImage(self.image)
         self.img_label = tk.Label(master, image=self.photo_image)
         self.img_label.pack()
