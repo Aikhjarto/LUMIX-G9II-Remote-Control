@@ -30,7 +30,7 @@ dependencies = [
 	"IPython",
 	"traitlets",
 	"pyzmq",
-	"qasync"]
+	"PySide6"]
 dynamic = ["version"]
 
 [tool.setuptools.dynamic]

@@ -1,5 +1,5 @@
-import asyncio
 import datetime
+import logging
 import signal
 import sys
 from typing import Tuple
@@ -7,14 +7,14 @@ from typing import Tuple
 import PIL
 import PIL.Image
 import PIL.ImageQt
-import qasync
-from PyQt6 import QtCore, QtGui
-from PyQt6.QtCore import QTimer
-from PyQt6.QtCore import pyqtSignal as Signal
-from PyQt6.QtWidgets import QApplication, QLabel
+from PySide6 import QtCore, QtGui, QtNetwork
+from PySide6.QtCore import QTimer, Signal, Slot
+from PySide6.QtWidgets import QApplication, QLabel
 
-from .helpers import get_local_ip, get_waiting_for_stream_image
-from .StreamReceiver import async_asyncio_thread
+from ..helpers import get_waiting_for_stream_image
+
+logging.basicConfig()
+logger = logging.getLogger()
 
 
 class LiveStreamWidget(QLabel):
@@ -33,11 +33,24 @@ class LiveStreamWidget(QLabel):
         image = PIL.ImageQt.ImageQt(image)
         self.image = image  # store handle, otherwise segfault
 
-        pixmap = QtGui.QPixmap()
-        pixmap.fromImage(self.image)
+        # pixmap = QtGui.QPixmap()
+        # pixmap.fromImage(self.image)
         self.setPixmap(QtGui.QPixmap.fromImage(image))
 
         self._last_button_press_coordinates: Tuple[int, int] = None
+
+        self.udp_thread = QtCore.QThread(self)
+        self.udp_socket = QtNetwork.QUdpSocket(self)
+        self.udp_socket.bind(QtNetwork.QHostAddress.Any, 49152)
+        self.udp_socket.readyRead.connect(self.readPendingDatagrams)
+
+    @Slot()
+    def readPendingDatagrams(self):
+        while self.udp_socket.hasPendingDatagrams():
+            (data, sender, senderPort) = self.udp_socket.readDatagram(
+                self.udp_socket.pendingDatagramSize()
+            )
+            self.update_image(datetime.datetime.now(), bytes(data))
 
     def _event_to_x_y(self, event: QtGui.QMouseEvent):
         x = max(0, min(1000, int(1000 * event.position().x() / self.width())))
@@ -71,8 +84,13 @@ class LiveStreamWidget(QLabel):
             # print("click", self._event_to_x_y(event))
             self.click.emit(QtCore.QPoint(*self._event_to_x_y(event)))
 
-    def update_image(self, timestamp: datetime.datetime, image_data: bytes):
-        print(timestamp)
+    def update_image(self, timestamp: datetime.datetime, data: bytes):
+        start_idx = data.find(b"\xFF\xD8\xFF")
+        if start_idx < 0:
+            logger.error("Could not find JPG/JFIF header in received data")
+            return
+        image_data = data[start_idx:]
+        logger.debug("received livestream frame of size %d bytes", len(image_data))
         pixmap = QtGui.QPixmap()
         pixmap.loadFromData(image_data)
         self.setPixmap(pixmap)
@@ -85,8 +103,6 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, sigint_handler)
     app = QApplication(sys.argv)
-    event_loop = qasync.QEventLoop(app)
-    asyncio.set_event_loop(event_loop)
 
     mw = LiveStreamWidget()
     mw.show()
@@ -94,11 +110,4 @@ if __name__ == "__main__":
     timer.start(200)
     timer.timeout.connect(lambda: None)  # Let the interpreter run periodically
 
-    event_loop.create_task(
-        async_asyncio_thread((get_local_ip(), 49152), mw.update_image)
-    )
-
-    app_close_event = asyncio.Event()
-    app.aboutToQuit.connect(app_close_event.set)
-    with event_loop:
-        event_loop.run_until_complete(app_close_event.wait())
+    app.exec()

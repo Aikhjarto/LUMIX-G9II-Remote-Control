@@ -297,7 +297,6 @@ class LumixG9IIRemoteControl:
         self.get_external_teleconverter()
         self.get_touch_type()
         self._get_curmenu()
-        self.set_local_language()
         self._subscribe_to_camera_events()
         logger.info("Connected to %s", str(self))
 
@@ -317,7 +316,6 @@ class LumixG9IIRemoteControl:
                     self.device_info_dict["friendlyName"],
                 )
                 self.get_state()
-                self._get_curmenu()
 
     @_requires_host
     def _get_device_info_via_ddd(self):
@@ -331,6 +329,20 @@ class LumixG9IIRemoteControl:
             self.device_info_dict[key] = i.text
 
         return self.device_info_dict
+
+    @_requires_connected
+    def _run_camcgi_from_dict(self, d: dict):
+        params = {}
+        for key in ("mode", "type", "value", "value2"):
+            if f"cmd_{key}" in d:
+                params[key] = d[f"cmd_{key}"]
+
+        ret = requests.get(
+            self._cam_cgi,
+            headers=self._headers,
+            params=params,
+        )
+        return self._check_ret_ok(ret)
 
     @_requires_connected
     def _get_capability(self):
@@ -349,6 +361,8 @@ class LumixG9IIRemoteControl:
             params={"mode": "getinfo", "type": "allmenu"},
         )
         self._allmenu_tree = self._check_ret_ok(ret)
+        self.set_local_language()
+        self._publish_state_change("allmenu_etree", self._allmenu_tree)
 
     @_requires_connected
     def _get_curmenu(self):
@@ -359,7 +373,7 @@ class LumixG9IIRemoteControl:
         )
         self._curmenu_tree = self._check_ret_ok(ret)
         self._curmenu_list = [i.attrib for i in self._curmenu_tree[1][:]]
-        self._publish_state_change("curment_list", self._curmenu_list)
+        self._publish_state_change("curmenu_etree", self._curmenu_tree)
 
     @_requires_connected
     def get_state(self):
@@ -837,7 +851,7 @@ class LumixG9IIRemoteControl:
         if item is not None:
             return item.text
         else:
-            return None
+            return title_id
 
     def print_set_setting_commands(self):
         """
@@ -845,7 +859,6 @@ class LumixG9IIRemoteControl:
         """
         pprint.pprint(self.get_setsetting_commands())
 
-    @_requires_connected
     def get_setsetting_commands(
         self,
     ) -> Dict[str, List[Union[Tuple[str,], Tuple[str, str]]]]:
@@ -862,15 +875,16 @@ class LumixG9IIRemoteControl:
                     name = self.get_localized_setting_name(group_title_id)
                 else:
                     name = None
-                data[cmd_type] = {"name": name, "values": []}
+                data[cmd_type] = {"name": name, "options": []}
 
-            # print(item.attrib)
+            d = {"name": self.get_localized_setting_name(item.attrib["title_id"])}
+            if "cmd_value" in item.attrib:
+                d["cmd_value"] = item.attrib["cmd_value"]
             if "cmd_value2" in item.attrib:
-                data[cmd_type]["values"].append(
-                    (item.attrib["cmd_value"], item.attrib["cmd_value2"])
-                )
-            elif "cmd_value" in item.attrib:
-                data[cmd_type]["values"].append((item.attrib["cmd_value"], None))
+                d["cmd_value2"] = item.attrib["cmd_value2"]
+
+            data[cmd_type]["options"].append(d)
+
         return data
 
     @_requires_connected
@@ -1000,6 +1014,7 @@ class LumixG9IIRemoteControl:
         """
         print(data)
         self._publish_state_change("camera_event", data)
+        self._get_curmenu()
         # TODO: make a more meaningful callback that calls get_lens on lens changes and curmenu on
         # mode changes and locks sending event while busy is active
 
