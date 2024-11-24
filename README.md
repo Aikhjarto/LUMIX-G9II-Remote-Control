@@ -39,3 +39,43 @@ ssh root@192.168.0.1 "tcpdump -i br-lan ether host a0:cd:f3:e7:7e:48 -U -s0 -w -
 ```
 * Connect your mobile phone and the DC-G9II to your router.
 * Run the Lumix Sync App on the mobile device and see in Wireshark the communication between your mobile phone and the camera in accordance of your actions in the Lumix Sync App.
+
+## Logging Blutooth Commads from LumixSync
+Enable Developer settings on your phone, enable USB Debugging
+```sh
+adb shell settings put secure bluetooth_hci_log 1
+adb shell cmd bluetooth_manager disable
+adb shell cmd bluetooth_manager enable
+```
+
+```sh
+adb bugreport zipFilename
+```
+
+```
+unzip zipFileName "FS/data/misc/bluetooth/*"
+```
+Open `*.cfa` file with Wireshark and use `btatt` as display filter
+
+
+### Bluetooth dump using adb dumpsys
+https://source.android.com/docs/core/connect/bluetooth/verifying_debugging?hl=de
+
+```sh
+adb shell dumpsys bluetooth_manager > btsnoop.txt
+```
+Convert to a format, Wireshark understands
+```
+./btsnooz.py btsnoop.txt > btsnoop.log
+```
+
+Open `btsnoop.log` file with Wireshark and use `btatt` as display filter
+`wireshark -Y btatt btsnoop.log `
+
+### Using Logcat from Android Studio
+[Android Studio](https://developer.android.com/studio)
+
+### bluetoothctl
+```sh
+sudo bluetoothctl -m
+```
