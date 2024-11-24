@@ -10,11 +10,11 @@ def get_local_ip() -> str:
         # gethostbyname fails due to DNS error
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0)
-        
+
         # doesn't even have to be reachable
-        s.connect(('10.254.254.254', 1))
+        s.connect(("10.254.254.254", 1))
         local_ip = s.getsockname()[0]
-        
+
     if local_ip.startswith("127."):
         local_ip = socket.gethostbyname(socket.getfqdn())
         if local_ip.startswith("127."):
