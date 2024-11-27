@@ -175,7 +175,11 @@ class LumixG9IIRemoteControl:
         def _decorated(*args, **kwargs):
             if "X-SESSION_ID" not in args[0]._headers:
                 if not args[0]._auto_connect:
-                    raise RuntimeError("Not connected to camera. Use connect() first")
+                    e = RuntimeError("Not connected to camera. Use connect() first")
+                    args[0]._zmq_socket.send_pyobj(
+                        {"type": "exception", "data": e}, zmq.NOBLOCK
+                    )
+                    raise e
                 else:
                     args[0].connect(args[0].host)
             return func(*args, **kwargs)
@@ -186,7 +190,11 @@ class LumixG9IIRemoteControl:
         def _decorated(*args, **kwargs):
             if not args[0]._host:
                 if not args[0]._auto_connect:
-                    raise RuntimeError("Not connected to camera. Use connect() first")
+                    e = RuntimeError("Not connected to camera. Use connect() first")
+                    args[0]._zmq_socket.send_pyobj(
+                        {"type": "exception", "data": e}, zmq.NOBLOCK
+                    )
+                    raise e
                 else:
                     logger.info("Camera hostname/IP not given. Searching for device")
                     args[0].host = find_lumix_camera_via_sspd()
@@ -795,7 +803,9 @@ class LumixG9IIRemoteControl:
             if state == "ok":
                 return data[1:]
         else:
-            raise RuntimeError(f'Unexpected content type {ret.headers["Content-Type"]}')
+            e = RuntimeError(f'Unexpected content type {ret.headers["Content-Type"]}')
+            self._zmq_socket.send_pyobj({"type": "exception", "data": e}, zmq.NOBLOCK)
+            raise e
 
         if state == "err_busy" and N < self.number_retry_if_busy:
             logger.warning(
@@ -806,16 +816,28 @@ class LumixG9IIRemoteControl:
             return self._check_ret_ok(ret2, N=N + 1)
         else:
             if state == "err_param":
-                raise ValueError(f"{ret.url} resulted in {state}")
+                e = ValueError(f"{ret.url} resulted in {state}")
+                self._zmq_socket.send_pyobj(
+                    {"type": "exception", "data": e}, zmq.NOBLOCK
+                )
+                raise e
             elif state == "err_reject":
-                raise KeyError(
+                e = KeyError(
                     f"{ret.url} resulted in {state}, "
                     "indicating that operation is not possible in current state of the camera"
                 )
+                self._zmq_socket.send_pyobj(
+                    {"type": "exception", "data": e}, zmq.NOBLOCK
+                )
+                raise e
             else:
-                raise RuntimeError(
+                e = RuntimeError(
                     f"{ret.url} resulted in {state}. Full error: {ret.text}"
                 )
+                self._zmq_socket.send_pyobj(
+                    {"type": "exception", "data": e}, zmq.NOBLOCK
+                )
+                raise e
 
     def set_local_language(self, language_code=None):
         """

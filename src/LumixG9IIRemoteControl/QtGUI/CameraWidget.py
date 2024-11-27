@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,8 @@ class CameraWidget(QWidget, NoRaiseMixin):
         zmq_receiver.dataChanged.connect(self._zmq_consumer_function)
         zmq_receiver.start()
 
+        self.error_message = QMessageBox()
+
         # livestream_widget.setEnabled(False)
         # self._apply_allmenu_xml(defusedxml.ElementTree.parse("../Dumps/allmenu.xml"))
         # self._apply_curmenu_xml(defusedxml.ElementTree.parse("../Dumps/curmenu.xml"))
@@ -96,6 +99,12 @@ class CameraWidget(QWidget, NoRaiseMixin):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
+                args[0].error_message.critical(
+                    args[0],
+                    "G9II Error",
+                    "\n".join(traceback.format_exception_only(e)),
+                )
+
                 traceback.print_exception(e)
 
         return no_raise
@@ -162,6 +171,11 @@ class CameraWidget(QWidget, NoRaiseMixin):
             elif event["type"] == "camera_event":
                 self.cameraEvent.emit(event["data"])
                 print(event)
+
+            elif event["type"] == "error":
+                self.error_message.critical(self, "Error from Camera",
+                    traceback.format_exception(event["data"])
+                )
 
         except Exception as e:
             logger.error("%s", traceback.format_exception(e))

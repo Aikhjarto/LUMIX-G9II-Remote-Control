@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -38,6 +39,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Lumix G9II Remote Control")
+
+        self.error_message = QMessageBox()
 
         self.livestream_widget = LiveStreamWidget()
         self.livestream_widget.drag_start.connect(self._drag_start)
@@ -118,6 +121,12 @@ class MainWindow(QMainWindow):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
+                args[0].error_message.critical(
+                    args[0],
+                    "Error",
+                    "\n".join(traceback.format_exception_only(e)),
+                )
+
                 traceback.print_exception(e)
 
         return no_raise
