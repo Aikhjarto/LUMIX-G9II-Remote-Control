@@ -11,3 +11,4 @@ IPython
 traitlets
 pyzmq
 PySide6
+qtpy

@@ -5,20 +5,25 @@ import xml.etree.ElementTree
 from typing import Dict
 
 import zmq
-from PySide6 import QtCore
-from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import (
+from qtpy import QtCore, QtGui
+from qtpy.QtCore import Signal, Slot
+from qtpy.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 import LumixG9IIRemoteControl.LumixG9IIRemoteControl
-from LumixG9IIRemoteControl.LumixG9IIRemoteControl import find_lumix_camera_via_sspd
+from LumixG9IIRemoteControl.LumixG9IIRemoteControl import (
+    didl_object_list_to_resource,
+    find_lumix_camera_via_sspd,
+)
 from LumixG9IIRemoteControl.QtGUI.NoRaise import NoRaiseMixin
 
 logging.basicConfig()
@@ -46,14 +51,21 @@ class CameraWidget(QWidget, NoRaiseMixin):
     cameraAllmenuChanged = Signal(xml.etree.ElementTree.ElementTree)
     cameraCurmenuChanged = Signal(xml.etree.ElementTree.ElementTree)
     cameraEvent = Signal(object)
+    cameraConnected = Signal(dict)
+    cameraDisconnected = Signal()
+    cameraItemsChanged = Signal(list)
+    cameraModeChanged = Signal(str)
+    cameraConnectionStateChanged = Signal(str)
+    cameraSettingsChanged = Signal(list)
+    lensChanged = Signal(dict)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         find_camera_button = QPushButton("Find camera")
         connect_button = QPushButton("Connect")
         connect_button.setCheckable(True)
-        connect_button.setDisabled(True)
         self.connect_button = connect_button
 
         edit = QLineEdit()
@@ -63,6 +75,11 @@ class CameraWidget(QWidget, NoRaiseMixin):
             lambda x, val=edit: self._find_camera(x, val)
         )
         connect_button.clicked.connect(lambda x, val=edit: self._connect(x, val))
+
+        self.play_rec_mode_button = QPushButton("Play/Rec")
+        self.play_rec_mode_button.setEnabled(False)
+        self.play_rec_mode_button.setCheckable(True)
+        self.play_rec_mode_button.clicked.connect(self._play_rec_toggle)
 
         lv = QVBoxLayout()
         lh = QHBoxLayout()
@@ -74,6 +91,8 @@ class CameraWidget(QWidget, NoRaiseMixin):
         lh.addWidget(find_camera_button)
         lh.addWidget(connect_button)
         lv.addLayout(lh)
+        lv.addWidget(self.play_rec_mode_button)
+
         self.setLayout(lv)
 
         self.g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(
@@ -84,11 +103,14 @@ class CameraWidget(QWidget, NoRaiseMixin):
         # g9ii._curmenu_tree = defusedxml.ElementTree.parse("../Dumps/curmenu.xml")
         # g9ii.set_local_language()
 
+        self._lens_dict_cache = {}
         zmq_receiver = ZMQReceiver(self)
         zmq_receiver.dataChanged.connect(self._zmq_consumer_function)
         zmq_receiver.start()
 
         self.error_message = QMessageBox()
+
+        self._old_cammode = None
 
         # livestream_widget.setEnabled(False)
         # self._apply_allmenu_xml(defusedxml.ElementTree.parse("../Dumps/allmenu.xml"))
@@ -109,7 +131,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         return no_raise
 
-    @_no_raise
     def _connect(self, value: bool, line_edit: QLineEdit):
 
         if line_edit.isModified():
@@ -118,14 +139,28 @@ class CameraWidget(QWidget, NoRaiseMixin):
             host_name = line_edit.placeholderText()
 
         if value:
-            self.g9ii.connect(host=host_name)
-            # self.play_rec_mode_button.setEnabled(True)
+            try:
+                self.g9ii.connect(host=host_name)
+            except Exception as e:
+                self.error_message.critical(
+                    self,
+                    "G9II Error",
+                    "\n".join(traceback.format_exception_only(e)),
+                )
+                self.connect_button.setChecked(False)
+            self.play_rec_mode_button.setEnabled(True)
+            self.cameraConnected.emit(
+                {"host": self.g9ii.host, "headers": self.g9ii._headers}
+            )
+            self.cameraConnectionStateChanged.emit("connected")
 
         else:
             self.g9ii.disconnect()
+            self.play_rec_mode_button.setEnabled(False)
+            self.cameraDisconnected.emit()
+            self.cameraConnectionStateChanged.emit("disconnected")
             # self.play_rec_mode_button.setEnabled(False)
 
-    @_no_raise
     def _find_camera(self, status: bool, line_edit: QLineEdit):
         try:
             camera_hostname = find_lumix_camera_via_sspd()
@@ -133,7 +168,11 @@ class CameraWidget(QWidget, NoRaiseMixin):
             traceback.print_exception(e)
             line_edit.setPlaceholderText("no camera found")
             line_edit.setText(None)
-            self.connect_button.setDisabled(True)
+            self.error_message.critical(
+                self,
+                "G9II Error",
+                "\n".join(traceback.format_exception_only(e)),
+            )
         else:
             line_edit.setText(camera_hostname)
             line_edit.setModified(True)
@@ -145,37 +184,69 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
     @Slot(object)
     def _zmq_consumer_function(self, event):
-
         try:
-
             if event["type"] == "state_dict":
                 self.cameraStateChanged.emit(event["data"])
-                # self.status_widget.setText(pprint.pformat(event["data"]))
-                # if event["data"]["cammode"] == "play":
-                #     self.shutter_button.setEnabled(False)
-                #     self.rec_button.setEnabled(False)
-                #     self.livestream_button.setEnabled(False)
-                # else:
-                #     self.shutter_button.setEnabled(True)
-                #     self.rec_button.setEnabled(True)
-                #     self.livestream_button.setEnabled(True)
+                if event["data"]["cammode"] != self._old_cammode:
+                    self.cameraModeChanged.emit(event["data"]["cammode"])
+                    self._old_cammode != event["data"]["cammode"]
 
             elif event["type"] == "allmenu_etree":
                 self.cameraAllmenuChanged.emit(event["data"])
-                # self.record_settings_widget.apply_allmenu_xml(event["data"])
 
             elif event["type"] == "curmenu_etree":
                 self.cameraCurmenuChanged.emit(event["data"])
-                # self.record_settings_widget.apply_curmenu_xml(event["data"])
 
             elif event["type"] == "camera_event":
                 self.cameraEvent.emit(event["data"])
-                print(event)
 
-            elif event["type"] == "error":
-                self.error_message.critical(self, "Error from Camera",
-                    traceback.format_exception(event["data"])
+            elif event["type"] == "setsettings":
+                self.cameraSettingsChanged.emit(event["data"])
+
+            elif event["type"] == "lens_dict":
+                # many events with same data, thus implement diff with cached version
+                if self._lens_dict_cache != event["data"]:
+                    self._lens_dict_cache = event["data"]
+                    self.lensChanged.emit(event["data"])
+
+            elif event["type"] == "exception":
+                self.error_message.critical(
+                    self,
+                    "Error from Camera",
+                    "\n".join(traceback.format_exception_only(event["data"])),
                 )
+            else:
+                logger.error("Unknown message, %s", event)
 
         except Exception as e:
             logger.error("%s", traceback.format_exception(e))
+
+    @_no_raise
+    def _play_rec_toggle(self, *args):
+        self.setStatusTip("Waiting for camera")
+        if self.play_rec_mode_button.isChecked():
+            self.g9ii.set_recmode()
+        else:
+            self.g9ii.set_playmode()
+        # todo freeze until new mode is set in camera (signal cameraModeChanged is emitted)
+
+        # self.setEnabled(False)
+
+    @Slot(dict)
+    def execute_camera_command(self, d):
+        logger.info("execute_camera_command: %s", d)
+        function = getattr(self.g9ii, d["function"])
+        if callable(function):
+            if "args" in d:
+                function(*d["args"])
+            else:
+                function()
+
+    def query_all_items(self, d):
+        QApplication.sendEvent(self, QtGui.QStatusTipEvent(f"Query Items {d}"))
+        logger.info("query_all_items: %s", d)
+
+        data = self.g9ii.query_all_items_on_sdcard(**d)
+        # data = self.g9ii.query_items_on_sdcard(*args, **kwargs)
+        data2 = didl_object_list_to_resource(data)
+        self.cameraItemsChanged.emit(data2)

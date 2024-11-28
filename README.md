@@ -52,7 +52,7 @@ adb shell cmd bluetooth_manager enable
 adb bugreport zipFilename
 ```
 
-```
+```sh
 unzip zipFileName "FS/data/misc/bluetooth/*"
 ```
 Open `*.cfa` file with Wireshark and use `btatt` as display filter
@@ -65,7 +65,7 @@ https://source.android.com/docs/core/connect/bluetooth/verifying_debugging?hl=de
 adb shell dumpsys bluetooth_manager > btsnoop.txt
 ```
 Convert to a format, Wireshark understands
-```
+```sh
 ./btsnooz.py btsnoop.txt > btsnoop.log
 ```
 

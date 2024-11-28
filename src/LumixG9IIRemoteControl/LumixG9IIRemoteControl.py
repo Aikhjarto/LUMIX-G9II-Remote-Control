@@ -9,7 +9,7 @@ import time
 import traceback
 import urllib.parse
 import xml.etree.ElementTree
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Literal, Tuple, Union
 
 import defusedxml.ElementTree
 import requests
@@ -24,9 +24,6 @@ from LumixG9IIRemoteControl.http_event_consumer import HTTPRequestHandler, Serve
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel("INFO")
-
-
-FocusSteps = ["wide-fast", "wide-normal", "tele-fast", "tele-normal"]
 
 
 def find_lumix_camera_via_sspd(
@@ -51,6 +48,173 @@ def find_lumix_camera_via_sspd(
         return hostnames.pop()
     else:
         raise ValueError(f"Multiple candidates found: {hostnames}.")
+
+
+def prepare_cds_query(
+    host: str,
+    StartingIndex=0,
+    RequestedCount=15,
+    age_in_days: int = None,
+    rating_list: Tuple[int] = (0,),
+    object_id_str="0",
+    recgroup_type_string=None,
+):
+    """
+    Parameters
+    ----------
+    age_in_days: int
+        Zero, means only today's items.
+        One means today's and yesterday's items.
+
+    rating_list:
+        0 identifies items with no ratings.
+        1 identifies items with one star.
+        2 identifies items with two star.
+        3 identifies items with three star.
+        4 identifies items with four star.
+        5 identifies items with five star.
+
+    object_id_str:
+        '01112122DIR'
+        TODO: it ist called container id and in between id and parentID as attribute to
+        the element "ns0:item"
+        didl-lite can decode that, but i don't get container id, with this script.
+        but Lumix sync does get it (i can see it in wireshark).
+        Once Lumix Sync requested it, i can connect with this script an get container id too.
+    """
+
+    filter_list = []
+    if age_in_days:
+        filter_list.append(f"type=date,value=relative,value2={age_in_days:d}")
+    rating_string = "/".join(map(str, rating_list))
+    filter_list.append(f"type=rating,value={rating_string}")
+    filter_string = ";".join(filter_list)
+
+    envelop = xml.etree.ElementTree.Element(
+        "s:Envelope",
+        attrib={
+            "xmlns:s": "http://schemas.xmlsoap.org/soap/envelope/",
+            "s:encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/",
+        },
+    )
+    body = xml.etree.ElementTree.SubElement(envelop, "s:Body")
+    browse = xml.etree.ElementTree.SubElement(
+        body,
+        "u:Browse",
+        attrib={
+            "xmlns:u": "urn:schemas-upnp-org:service:ContentDirectory:1",
+            "xmlns:pana": "urn:schemas-panasonic-com:pana",
+        },
+    )
+    xml.etree.ElementTree.SubElement(browse, "ObjectID").text = object_id_str
+    xml.etree.ElementTree.SubElement(browse, "BrowseFlag").text = "BrowseDirectChildren"
+    xml.etree.ElementTree.SubElement(browse, "Filter").text = "*"
+    xml.etree.ElementTree.SubElement(browse, "StartingIndex").text = str(
+        int(StartingIndex)
+    )
+    xml.etree.ElementTree.SubElement(browse, "RequestedCount").text = str(
+        int(RequestedCount)
+    )
+    xml.etree.ElementTree.SubElement(browse, "SortCriteria")
+    xml.etree.ElementTree.SubElement(browse, "pana:X_FromCP").text = "LumixLink2.0"
+    if recgroup_type_string is not None:
+        xml.etree.ElementTree.SubElement(browse, "pana:X_RecGroupType").text = (
+            recgroup_type_string
+        )
+    if filter_string is not None:
+        xml.etree.ElementTree.SubElement(browse, "pana:X_Filter").text = filter_string
+    xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = (
+        "type=date,value=ascend"
+    )
+
+    xml.etree.ElementTree.indent(envelop, space=" ")
+    xml_string = xml.etree.ElementTree.tostring(
+        envelop, xml_declaration=True, encoding="utf-8", short_empty_elements=False
+    )
+    xml_string = xml_string.replace(b"'", b'"')
+
+    url = f"http://{host}:60606/Server0/CDS_control"
+    headers = {
+        "User-Agent": "Panasonic Android/1 DM-CP",
+        "Content-Type": 'text/xml charset="utf-8"',
+        "SOAPACTION": '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"',
+    }
+
+    return url, xml_string, headers
+
+
+def decode_cds_query_response(text: str):
+    soap_xml = defusedxml.ElementTree.fromstring(text)
+    didl_lite_xml = defusedxml.ElementTree.fromstring(soap_xml.find(".//Result").text)
+    didl_object_list = didl_lite.from_xml_el(didl_lite_xml)
+    UpdateID = int(soap_xml.find(".//UpdateID").text)
+    TotalMatches = int(soap_xml.find(".//TotalMatches").text)  # 123
+    NumberReturned = int(
+        soap_xml.find(".//NumberReturned").text
+    )  # max 50, even if more where requested
+    return (
+        soap_xml,
+        didl_lite_xml,
+        didl_object_list,
+        TotalMatches,
+        NumberReturned,
+        text.find("container"),
+    )
+
+
+def didl_object_list_to_resource(
+    didl_object_list: List[Union[didl_lite.DidlObject, didl_lite.Descriptor]]
+) -> Dict[
+    Union[
+        Literal["CAM_RAW_JPG"],
+        Literal["CAM_RAW"],
+        Literal["CAM_TN"],
+        Literal["CAM_LRGTN"],
+        Literal["CAM_AVC_MP4_ORG"],
+        Literal["OriginalFileName"],
+        Literal["didl_object"],
+    ],
+    str,
+]:
+    lst = []
+    for didl_object in didl_object_list:
+
+        if isinstance(didl_object, didl_lite.ImageItem) or isinstance(
+            didl_object, didl_lite.VideoItem
+        ):
+            uri_dict = {}
+            for resource in didl_object.res:
+                # [Resource(uri='http://192.168.7.211:50001/DO01111793.JPG', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW_JPG;OriginalFileName='PANA1793.JPG'", size='9607680'),
+                #  Resource(uri='http://192.168.7.211:50001/DO01111793.RW2', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW;OriginalFileName='PANA1793.RW2'", size='39478272'),
+                #  Resource(uri='http://192.168.7.211:50001/DT01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
+                #  Resource(uri='http://192.168.7.211:50001/DL01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_MED;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+
+                # [Resource(uri='http://192.168.7.211:50001/DO01122900.MP4', protocol_info="http-get:*:application/octet-stream:DLNA.ORG_OP=01;PANASONIC.COM_PN=CAM_AVC_MP4_ORG;OriginalFileName='PANA2900.MP4'", size='2751475988', duration='0:13:30'),
+                #  Resource(uri='http://192.168.7.211:50001/DT01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
+                #  Resource(uri='http://192.168.7.211:50001/DL01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_SM;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+
+                # Only DO files have original filenames
+                protocol_info_fields = resource.protocol_info.split(";")
+                for protocol_info_field in protocol_info_fields:
+                    if protocol_info_field.startswith("PANASONIC.COM_PN="):
+                        typ = protocol_info_field[17:]
+                        uri_dict[typ] = resource.uri
+                    elif protocol_info_field.startswith("OriginalFileName="):
+                        uri_dict["OriginalFileName"] = protocol_info_field[18:-1]
+            lst.append(uri_dict)
+        elif isinstance(didl_object, didl_lite.Container):
+            # TODO: implement
+            logger.error("Not implemented didl_object")
+            uri_dict = {}
+            # Container(id='01111980DIR', parent_id='0', restricted='0', title='111-1980', creator=None, res=[], write_status='WRITABLE', child_count='30', create_class=None, search_class=None, searchable=None, never_playable=None, x__rec_group_type='Interval', x__thumb_uri='http://192.168.7.211:50001/DT01111980.JPG', x__rating_num='0', x__rating='0', descriptors=[], children=[])
+            uri_dict["CAM_TN"] = didl_object.x__thumb_uri
+            uri_dict["didl_object"] = didl_object
+
+        else:
+            logger.error(
+                "Cannot parse didl object %s of type %s", didl_object, type(didl_object)
+            )
+    return lst
 
 
 class LumixG9IIRemoteControl:
@@ -294,6 +458,7 @@ class LumixG9IIRemoteControl:
             )
             self._check_ret_ok(ret)
 
+        self._keepalive = True
         self._state_thread = threading.Thread(
             target=self._get_state_thread, daemon=True
         )
@@ -319,11 +484,18 @@ class LumixG9IIRemoteControl:
         while self._keepalive:
             time.sleep(2)
             with self._request_lock:
-                logger.debug(
-                    "update state and curmenu from camera %s",
-                    self.device_info_dict["friendlyName"],
-                )
-                self.get_state()
+                try:
+                    logger.debug(
+                        "update state and curmenu from camera %s",
+                        self.device_info_dict["friendlyName"],
+                    )
+                    self.get_state()
+                except Exception as e:
+                    self.camera_state_dict = {
+                        "cammode": "no connection",
+                        "error": traceback.format_exception_only(e),
+                    }
+                    self._publish_state_change("state_dict", self.camera_state_dict)
 
     @_requires_host
     def _get_device_info_via_ddd(self):
@@ -344,7 +516,7 @@ class LumixG9IIRemoteControl:
         for key in ("mode", "type", "value", "value2"):
             if f"cmd_{key}" in d:
                 params[key] = d[f"cmd_{key}"]
-
+        logger.error('cam_cgi_params %s', params)
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
@@ -414,6 +586,7 @@ class LumixG9IIRemoteControl:
             "manufactorer": data[14],
             "serial_number": data[15],
         }
+        self._publish_state_change("lens_dict", self.lens_dict)
         # TODO: decode other fields
         return data[1:]
 
@@ -616,13 +789,11 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
 
     @_requires_connected
-    def move_focus(self, step):
+    def move_focus(
+        self, step: Literal["wide-fast", "wide-normal", "tele-fast", "tele-normal"]
+    ):
         """
         Move focus in predefined steps.
-
-        Parameters
-        ---------
-        step: Union[Literal["wide-normal"],Literal["wide-fast"],Literal["tele-fast"],Literal["tele-normal"]]
         """
 
         ret = requests.get(
@@ -630,12 +801,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camctrl", "type": "focus", "value": step},
         )
-        try:
-            data = self._check_ret_ok(ret)
-        except ValueError as e:
-            traceback.print_exception(e)
-            logger.error(f"{step} is not in {FocusSteps}")
-            return
+        data = self._check_ret_ok(ret)
         logger.info("Focus values: %s", data)
         # ok,564,1024,0,0,1024,1000/295,500/537,300/779,0/0,0/0,0/0,0/0
         # TODO: decode all values. First value seems to be focus distance starting from zero
@@ -936,35 +1102,56 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
 
     @_requires_connected
-    def get_setting(self, setting) -> dict:
+    def get_setting(
+        self, setting
+    ) -> Dict[Literal["type", "value", "value2"], str]:
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "getsetting", "type": setting},
         )
-        return self._check_ret_ok(ret)[1].attrib
+        res = self._check_ret_ok(ret)[1]
+        if len(res.attrib) == 1:
+            data = {
+                "type": list(res.attrib.keys())[0],
+                "value": list(res.attrib.values())[0],
+            }
+
+        if text:= self._check_ret_ok(ret)[1].text:
+            data["value2"] = text
+        return data
 
     @_requires_connected
     def select_sd_card(self, value):
         return self.set_setting("current_sd", value=f"sd{value:d}")
 
     @_requires_connected
-    def get_settings(self) -> Dict[str, str]:
-        data = {}
+    def get_settings(self) -> List[Dict[str, str]]:
+        data = []
         lst = list(self.get_setsetting_commands().keys())
         settings_not_in_get_set_settings = [
             "play_sort_mode",
             "qmenu_disp_style",
             "photostyle2",
         ]
+        read_only_settings = [
+            "liveviewsize",
+            "recmode",
+            "videoquality_filter",
+            "photostyle",
+        ]
+
         "play_sort_mode can be file_no or date"
         lst.extend(settings_not_in_get_set_settings)
 
         for setsetting_cmd in lst:
-            try:
-                data.update(self.get_setting(setsetting_cmd))
-            except RuntimeError:
-                logger.error("Could not read %s", setsetting_cmd)
+            if setsetting_cmd not in read_only_settings:
+                try:
+                    data.append(self.get_setting(setsetting_cmd))
+                except RuntimeError:
+                    logger.error("Could not read %s", setsetting_cmd)
+
+        self._publish_state_change("setsettings", data)
         return data
 
     def print_current_settings(self):
@@ -1037,6 +1224,7 @@ class LumixG9IIRemoteControl:
         print(data)
         self._publish_state_change("camera_event", data)
         self._get_curmenu()
+        self.get_settings()
         # TODO: make a more meaningful callback that calls get_lens on lens changes and curmenu on
         # mode changes and locks sending event while busy is active
 
@@ -1054,54 +1242,42 @@ class LumixG9IIRemoteControl:
             httpd.serve_forever()
 
     @_requires_connected
-    def query_all_items(self):
-        # TODO: continue
+    def query_all_items_on_sdcard(
+        self, **kwargs
+    ) -> List[Union[didl_lite.DidlObject, didl_lite.Descriptor]]:
+
+        logger.info("query_all_items_on_sdcard: %s", kwargs)
 
         self.raw_img_send_enable()
-        content_info_dict = self.get_content_info()
+        # content_info_dict = self.get_content_info()
         # {"current_position": 126, "total_content_number": 388, "content_number": 127}
-        N_bulk = 50
-
-        for i in range(math.ceil(content_info_dict["total_content_number"] / N_bulk)):
-            print(
-                i,
-                self.query_items(StartingIndex=i * N_bulk, RequestedCount=N_bulk)[-2:],
+        n_bulk = 15
+        # logger.info("%s", content_info_dict)
+        # n_iterations = math.ceil(content_info_dict["total_content_number"] / n_bulk)
+        TotalMatches = float("inf")
+        TotalNumberReturned = 0
+        item_list = []
+        i = 0
+        while TotalNumberReturned < TotalMatches:
+            logger.info("Item query %d/%s", TotalNumberReturned, TotalMatches)
+            (
+                soap_xml,
+                didl_lite_xml,
+                didl_object_list,
+                TotalMatches,
+                NumberReturned,
+                container_id,
+            ) = self.query_items_on_sdcard(
+                StartingIndex=i * n_bulk, RequestedCount=n_bulk, **kwargs
             )
+            i = i + 1
+            TotalNumberReturned = TotalNumberReturned + NumberReturned
+            item_list.extend(didl_object_list)
+        return item_list
 
     @_requires_connected
-    def query_items(
-        self,
-        StartingIndex=0,
-        RequestedCount=15,
-        age_in_days: int = None,
-        rating_list: Tuple[int] = (0,),
-        object_id_str="0",
-        recgroup_type_string=None,
-        auto_set_play_mode=True,
-    ):
+    def query_items_on_sdcard(self, auto_set_play_mode=True, **kwargs):
         """
-        Parameters
-        ----------
-        age_in_days: int
-            Zero, means only today's items.
-            One means today's and yesterday's items.
-
-        rating_list:
-            0 identifies items with no ratings.
-            1 identifies items with one star.
-            2 identifies items with two star.
-            3 identifies items with three star.
-            4 identifies items with four star.
-            5 identifies items with five star.
-
-        object_id_str:
-            '01112122DIR'
-            TODO: it ist called container id and in between id and parentID as attribute to
-            the element "ns0:item"
-            didl-lite can decode that, but i don't get container id, with this script.
-            but Lumix sync does get it (i can see it in wireshark).
-            Once Lumix Sync requested it, i can connect with this script an get container id too.
-
         Notes
         -----
         use select_sd_card() to change which sd-card should be queried.
@@ -1112,93 +1288,15 @@ class LumixG9IIRemoteControl:
             state = self.get_state()
             if state["cammode"] != "play":
                 self.set_playmode()
-
-        filter_list = []
-        if age_in_days:
-            filter_list.append(f"type=date,value=relative,value2={age_in_days:d}")
-        rating_string = "/".join(map(str, rating_list))
-        filter_list.append(f"type=rating,value={rating_string}")
-        filter_string = ";".join(filter_list)
-
-        envelop = xml.etree.ElementTree.Element(
-            "s:Envelope",
-            attrib={
-                "xmlns:s": "http://schemas.xmlsoap.org/soap/envelope/",
-                "s:encodingStyle": "http://schemas.xmlsoap.org/soap/encoding/",
-            },
-        )
-        body = xml.etree.ElementTree.SubElement(envelop, "s:Body")
-        browse = xml.etree.ElementTree.SubElement(
-            body,
-            "u:Browse",
-            attrib={
-                "xmlns:u": "urn:schemas-upnp-org:service:ContentDirectory:1",
-                "xmlns:pana": "urn:schemas-panasonic-com:pana",
-            },
-        )
-        xml.etree.ElementTree.SubElement(browse, "ObjectID").text = object_id_str
-        xml.etree.ElementTree.SubElement(browse, "BrowseFlag").text = (
-            "BrowseDirectChildren"
-        )
-        xml.etree.ElementTree.SubElement(browse, "Filter").text = "*"
-        xml.etree.ElementTree.SubElement(browse, "StartingIndex").text = str(
-            int(StartingIndex)
-        )
-        xml.etree.ElementTree.SubElement(browse, "RequestedCount").text = str(
-            int(RequestedCount)
-        )
-        xml.etree.ElementTree.SubElement(browse, "SortCriteria")
-        xml.etree.ElementTree.SubElement(browse, "pana:X_FromCP").text = "LumixLink2.0"
-        if recgroup_type_string is not None:
-            xml.etree.ElementTree.SubElement(browse, "pana:X_RecGroupType").text = (
-                recgroup_type_string
-            )
-        if filter_string is not None:
-            xml.etree.ElementTree.SubElement(browse, "pana:X_Filter").text = (
-                filter_string
-            )
-        xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = (
-            "type=date,value=ascend"
-        )
-
-        xml.etree.ElementTree.indent(envelop, space=" ")
-        xml_string = xml.etree.ElementTree.tostring(
-            envelop, xml_declaration=True, encoding="utf-8", short_empty_elements=False
-        )
-        xml_string = xml_string.replace(b"'", b'"')
-        ret = requests.post(
-            url="http://192.168.7.211:60606/Server0/CDS_control",
-            headers={
-                "User-Agent": "Panasonic Android/1 DM-CP",
-                "Content-Type": 'text/xml charset="utf-8"',
-                "SOAPACTION": '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"',
-            },
-            data=xml_string,
-        )
+        url, xml_string, headers = prepare_cds_query(self._host, **kwargs)
+        ret = requests.post(url=url, headers=headers, data=xml_string)
 
         if ret.ok:
-            # decode the didl response, which is in a soap envelop
-            soap_xml = defusedxml.ElementTree.fromstring(ret.text)
-            didl_lite_xml = defusedxml.ElementTree.fromstring(
-                soap_xml.find(".//Result").text
-            )
-            didl_object = didl_lite.from_xml_el(didl_lite_xml)
-            UpdateID = int(soap_xml.find(".//UpdateID").text)
-            TotalMatches = int(soap_xml.find(".//TotalMatches").text)  # 123
-            NumberReturned = int(
-                soap_xml.find(".//NumberReturned").text
-            )  # max 50, even if more where requested
-            return (
-                soap_xml,
-                didl_lite_xml,
-                didl_object,
-                TotalMatches,
-                NumberReturned,
-                ret.text.find("container"),
-            )
+            return decode_cds_query_response(ret.text)
         else:
             logger.error(
-                "Request %s\n resulted in %s \n with answer %s\nEnsure you are in play mode and your filters are correct.",
+                "Request %s\n resulted in %s \n with answer %s\n"
+                "Ensure you are in play mode and your filters are correct.",
                 pprint.pformat(xml_string.decode()),
                 pprint.pformat(ret),
                 pprint.pformat(ret.text),

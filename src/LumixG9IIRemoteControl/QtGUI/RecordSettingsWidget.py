@@ -1,12 +1,12 @@
+import logging
 import pprint
 import traceback
 import xml.etree.ElementTree
-from typing import Dict
+from typing import Dict, List, Literal, Union
 
-from PySide6 import QtCore, QtGui
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtWidgets import (
-    QApplication,
+from qtpy import QtCore, QtGui
+from qtpy.QtCore import Qt, Signal, Slot
+from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QGraphicsScene,
@@ -25,6 +25,10 @@ from PySide6.QtWidgets import (
 
 import LumixG9IIRemoteControl.LumixG9IIRemoteControl
 
+logging.basicConfig()
+logger = logging.getLogger()
+logger.setLevel("INFO")
+
 
 class RecordSettingsWidget(QTabWidget):
 
@@ -41,6 +45,7 @@ class RecordSettingsWidget(QTabWidget):
         ) = g9ii
         self._allmenu_parent_map = {}
         self._id_map: Dict[str, QWidget] = {}
+        self._setsetting_map: Dict[str, Union[QComboBox, QLineEdit]] = {}
         super().__init__(*args, **kwargs)
 
     def _no_raise(func):
@@ -56,9 +61,10 @@ class RecordSettingsWidget(QTabWidget):
     def apply_curmenu_xml(self, curmenu_tree: xml.etree.ElementTree.ElementTree):
 
         for item in curmenu_tree.findall(".//item"):
-            if not item.attrib["id"] in self._id_map:
-                print("missing", item.attrib["id"])
-                continue
+            # TODO implement missing
+            # if not item.attrib["id"] in self._id_map:
+            #     print("missing", item.attrib["id"])
+            #     continue
 
             # print(self._id_map[item.attrib["id"]], item.attrib["enable"])
             if item.attrib["enable"] == "yes":
@@ -115,7 +121,7 @@ class RecordSettingsWidget(QTabWidget):
 
         tab_names = allmenu_tree.find("menuset")
         for tab_name in tab_names:
-            print(tab_name.tag)
+            logger.debug(tab_name.tag)
             menu = tab_name.find("menu")
             if not menu:
                 continue
@@ -131,7 +137,7 @@ class RecordSettingsWidget(QTabWidget):
             scroll.setWidget(w)
             self.addTab(scroll, tab_name.tag)
 
-        pprint.pprint(self._id_map)
+        # pprint.pprint(self._id_map)
 
     def _parse_menu(self, menu: xml.etree.ElementTree.Element) -> QWidget:
 
@@ -151,11 +157,29 @@ class RecordSettingsWidget(QTabWidget):
                     self._id_map[item.attrib["id"]] = combo_box
                     model = combo_box.model()
                     for idx, grouped_item in enumerate(grouped_items):
-                        combo_box.addItem(self._title_id(grouped_item.attrib))
-                        print("adding", grouped_item.attrib["id"])
+
+                        userData = grouped_item.attrib["cmd_value"]
+                        if "cmd_value2" in grouped_item.attrib:
+                            userData = (
+                                userData + "," + grouped_item.attrib["cmd_value2"]
+                            )
+
+                        combo_box.addItem(
+                            self._title_id(grouped_item.attrib),
+                            userData=userData,
+                        )
+                        logger.debug("adding", grouped_item.attrib["id"])
                         # model_index = model.index(idx,0)
                         # self._id_map[grouped_item.attrib['id']] = model.itemData(model_index)
                         self._id_map[grouped_item.attrib["id"]] = (combo_box, idx)
+                        if grouped_item.attrib["cmd_mode"] == "setsetting":
+                            if (
+                                grouped_item.attrib["cmd_type"]
+                                not in self._setsetting_map
+                            ):
+                                self._setsetting_map[
+                                    grouped_item.attrib["cmd_type"]
+                                ] = combo_box
                     combo_box.setCurrentIndex(-1)
                     val2 = [grouped_item.attrib for grouped_item in grouped_items]
                     combo_box.currentIndexChanged.connect(
@@ -196,6 +220,10 @@ class RecordSettingsWidget(QTabWidget):
                             )
                         )
                         self._id_map[item.attrib["id"]] = line_edit
+                        if item.attrib.get("cmd_type") not in self._setsetting_map:
+                            self._setsetting_map[item.attrib.get("cmd_type")] = (
+                                line_edit
+                            )
 
                         l = QHBoxLayout()
                         l.addWidget(QLabel(friendly_name))
@@ -210,7 +238,7 @@ class RecordSettingsWidget(QTabWidget):
                             )
                             button = QPushButton(text=friendly_name)
                             button.pressed.connect(
-                                lambda: self.g9ii._cam_cgi(item.attrib)
+                                lambda: self.g9ii._run_camcgi_from_dict(item.attrib)
                             )
                             self._id_map[item.attrib["id"]] = button
 
@@ -232,16 +260,47 @@ class RecordSettingsWidget(QTabWidget):
         w.setLayout(layout)
         return w
 
+    @Slot(list)
+    def apply_current_settings(
+        self, data: List[Dict[Literal["type", "value", "value2"], str]]
+    ):
+        print('xxx', data)
+        breakpoint()
+
+        for item in data:
+
+            if item["type"] in self._setsetting_map:
+                widget = self._setsetting_map[item["type"]]
+                if isinstance(widget, QComboBox):
+                    userData = item["value"]
+                    if "value2" in item:
+                        userData = userData + "," + item["value2"]
+
+                    index = widget.findData(userData)
+                    if index == -1:
+                        logger.error(
+                            f"cannot find value {userData} in QComboBox for {item['type']}"
+                        )
+                    else:
+                        widget.blockSignals(True)
+                        widget.setCurrentIndex(index)
+                        widget.blockSignals(False)
+
+                elif isinstance(widget, QLineEdit):
+                    widget.setText(item["value"])
+                else:
+                    logger.error("ERRROR")
+            else:
+                logger.error(f"{item}, not in _setsetting_map")
+
     @_no_raise
     def index_changed(self, val, i):
-        print("cam_cgi_dict", val[i])
+        # print("cam_cgi_dict", val[i])
         try:
             ret = self.g9ii._run_camcgi_from_dict(val[i])
         except RuntimeError as e:
             traceback.print_exception(e)
-        else:
-            print(ret)
-
+        
     @_no_raise
     def _title_id(self, d: dict) -> str:
         if "title_id" in d:

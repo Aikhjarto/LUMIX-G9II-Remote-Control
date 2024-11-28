@@ -5,9 +5,10 @@ import sys
 import traceback
 from typing import Dict
 
-from PySide6 import QtCore, QtGui
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtWidgets import (
+import qtconsole
+from qtpy import QtCore, QtGui
+from qtpy.QtCore import Qt, QTimer, Signal, Slot
+from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -21,14 +22,17 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
+    QStatusBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .CameraWidget import CameraWidget
-from .LiveStreamWidget import LiveStreamWidget
-from .RecordSettingsWidget import RecordSettingsWidget
+from .console import EmbedIPythonWidget
+from .PlayModeWidget import PlayModeWidget
+from .RecModeWidget import RecModeWidget
 
 logging.basicConfig()
 logger = logging.getLogger()
@@ -38,72 +42,64 @@ logger.setLevel("INFO")
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
         self.setWindowTitle("Lumix G9II Remote Control")
 
         self.error_message = QMessageBox()
 
-        self.livestream_widget = LiveStreamWidget()
-        self.livestream_widget.drag_start.connect(self._drag_start)
-        self.livestream_widget.drag.connect(self._drag_continue)
-        self.livestream_widget.drag_stop.connect(self._drag_stop)
-        self.livestream_widget.click.connect(self._click)
+        self.play_mode_widget = PlayModeWidget()
+        self.play_mode_widget.show()
 
         self.status_widget = QLabel(text="Camera not connected")
         self.camera_widget = CameraWidget()
-        self.record_settings_widget = RecordSettingsWidget(self.camera_widget.g9ii)
-        self.camera_widget.cameraAllmenuChanged.connect(
-            self.record_settings_widget.apply_allmenu_xml
+
+        self.rec_mode_widget = RecModeWidget(self.camera_widget.g9ii)
+        self.rec_mode_widget.cameraCommandRequest.connect(
+            self.camera_widget.execute_camera_command
         )
-        self.camera_widget.cameraCurmenuChanged.connect(
-            self.record_settings_widget.apply_curmenu_xml
+
+        self.camera_widget.cameraItemsChanged.connect(
+            self.play_mode_widget.play_mode_table_widget.update_resource_list
         )
+
+        self.play_mode_widget.imageListRequest.connect(
+            self.camera_widget.query_all_items
+        )
+        self.camera_widget.cameraConnected.connect(
+            self.play_mode_widget.play_mode_table_widget.update_connection_state
+        )
+
         self.camera_widget.cameraStateChanged.connect(
             lambda x: self.status_widget.setText(pprint.pformat(x))
         )
-        self.record_settings_widget.requestCamCgiCall.connect(
+
+        self.camera_widget.lensChanged.connect(self.rec_mode_widget.apply_lens_data)
+
+        self.camera_widget.cameraAllmenuChanged.connect(
+            self.rec_mode_widget.record_settings_widget.apply_allmenu_xml
+        )
+        self.camera_widget.cameraCurmenuChanged.connect(
+            self.rec_mode_widget.record_settings_widget.apply_curmenu_xml
+        )
+
+        self.camera_widget.cameraSettingsChanged.connect(
+            self.rec_mode_widget.record_settings_widget.apply_current_settings
+        )
+
+        self.rec_mode_widget.record_settings_widget.requestCamCgiCall.connect(
             self.camera_widget.run_camcgi_from_dict
         )
+
+        self.camera_widget.cameraModeChanged.connect(self._cammode_changed)
 
         layout = QVBoxLayout()
         layout.addWidget(self.camera_widget)
 
-        self.play_rec_mode_button = QPushButton("Play/Rec")
-        self.play_rec_mode_button.setEnabled(True)
-        self.play_rec_mode_button.setCheckable(True)
-        self.play_rec_mode_button.clicked.connect(self._play_rec_toggle)
-        layout.addWidget(self.play_rec_mode_button)
-
-        self.shutter_button = QPushButton("Capture")
-        self.shutter_button.setEnabled(True)
-        self.shutter_button.clicked.connect(self._capture)
-        layout.addWidget(self.shutter_button)
-
-        self.rec_button = QPushButton("Rec. Video")
-        self.rec_button.setEnabled(True)
-        self.rec_button.setCheckable(True)
-        self.rec_button.clicked.connect(self._rec_video)
-        layout.addWidget(self.rec_button)
-
-        self.livestream_button = QPushButton("LiveStream")
-        self.livestream_button.setEnabled(True)
-        self.livestream_button.setCheckable(True)
-        self.livestream_button.clicked.connect(self._livestream_toggle)
-        layout.addWidget(self.livestream_button)
-
-        button = QPushButton("Screen on")
-        button.clicked.connect(self._lcd_on)
-        layout.addWidget(button)
         button = QPushButton("Quit")
         button.clicked.connect(self._quit)
         layout.addWidget(button)
-
-        control_widget = QWidget()
-        control_widget.setLayout(layout)
-
-        layout = QHBoxLayout()
-        layout.addWidget(control_widget, stretch=0)
-        layout.addWidget(self.livestream_widget, stretch=0)
-        layout.addWidget(self.record_settings_widget, stretch=0)
 
         scroll = QScrollArea()
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -111,6 +107,20 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.status_widget)
         layout.addWidget(scroll, stretch=0)
+
+        control_widget = QWidget()
+        control_widget.setLayout(layout)
+        control_widget.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum
+        )
+
+        layout = QHBoxLayout()
+        layout.addWidget(control_widget)
+        layout.addWidget(self.rec_mode_widget)
+        layout.addWidget(self.play_mode_widget)
+
+        self.rec_mode_widget.setVisible(False)
+        self.play_mode_widget.setVisible(False)
 
         central_widget = QWidget()
         central_widget.setLayout(layout)
@@ -131,52 +141,13 @@ class MainWindow(QMainWindow):
 
         return no_raise
 
-    @_no_raise
-    def _play_rec_toggle(self, *args):
-        if self.play_rec_mode_button.isChecked():
-            return self.camera_widget.g9ii.set_recmode()
-        else:
-            return self.camera_widget.g9ii.set_playmode()
+    @Slot(str)
+    def _cammode_changed(self, mode: str):
 
-    @_no_raise
-    def _livestream_toggle(self, *args):
-        if self.livestream_button.isChecked():
-            print("Start stream")
-            return self.camera_widget.g9ii.start_stream()
-        else:
-            print("stop stream")
-            return self.camera_widget.g9ii.stop_stream()
-
-    @_no_raise
-    def _rec_video(self, *args):
-        if self.rec_button.isChecked():
-            return self.camera_widget.g9ii.video_recstart()
-        else:
-            return self.camera_widget.g9ii.video_recstop()
-
-    @_no_raise
-    def _capture(self, *args):
-        return self.camera_widget.g9ii.capture()
-
-    @_no_raise
-    def _drag_start(self, pos: QtCore.QPoint):
-        return self.camera_widget.g9ii.send_touch_drag("start", pos.x(), pos.y())
-
-    @_no_raise
-    def _drag_stop(self, pos: QtCore.QPoint):
-        return self.camera_widget.g9ii.send_touch_drag("stop", pos.x(), pos.y())
-
-    @_no_raise
-    def _drag_continue(self, pos: QtCore.QPoint):
-        return self.camera_widget.g9ii.send_touch_drag("continue", pos.x(), pos.y())
-
-    @_no_raise
-    def _click(self, pos: QtCore.QPoint):
-        return self.camera_widget.g9ii.send_touch_coordinate(pos.x(), pos.y())
-
-    @_no_raise
-    def _lcd_on(self, *args):
-        return self.camera_widget.g9ii.lcd_on()
+        # self.setEnabled(True)
+        self.status_bar.showMessage(f"Camera Mode changed to {mode}")
+        self.rec_mode_widget.setVisible(mode == "rec")
+        self.play_mode_widget.setVisible(mode == "play")
 
     def _quit(self, *args):
         QApplication.quit()
@@ -191,11 +162,18 @@ def main():
     app = QApplication(sys.argv)
 
     mw = MainWindow()
-    mw.show()
+
+    qtconsole = EmbedIPythonWidget()
+    qtconsole.update_console_namespace(
+        "LumixG9IIRemoteControl.QtGUI.GUI", type(mw).__name__, "mw"
+    )
 
     timer = QTimer()
     timer.start(200)
     timer.timeout.connect(lambda: None)  # Let the interpreter run periodically
+
+    qtconsole.show()
+    mw.show()
 
     app.exec()
 

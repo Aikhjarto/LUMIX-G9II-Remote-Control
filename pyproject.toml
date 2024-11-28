@@ -29,9 +29,14 @@ dependencies = [
 	"python-didl-lite",
 	"IPython",
 	"traitlets",
-	"pyzmq",
-	"PySide6"]
+	"pyzmq"]
+
 dynamic = ["version"]
+
+[project.optional-dependencies]
+gui = ["PySide6",
+	   "qtpy",
+	   "qtconsole"]
 
 [tool.setuptools.dynamic]
 version = {attr = "LumixG9IIRemoteControl.__version__"} 
