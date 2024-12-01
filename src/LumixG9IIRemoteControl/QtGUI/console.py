@@ -9,7 +9,7 @@ class EmbedIPythonWidget(RichJupyterWidget):
     """
 
     def __init__(self, **kwarg):
-        super(RichJupyterWidget, self).__init__()
+        super().__init__()
         self.kernel_manager = QtInProcessKernelManager()
         self.kernel_manager.start_kernel()
         self.kernel = self.kernel_manager.kernel

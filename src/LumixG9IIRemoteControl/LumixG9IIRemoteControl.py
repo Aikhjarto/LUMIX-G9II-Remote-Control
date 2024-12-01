@@ -9,7 +9,7 @@ import time
 import traceback
 import urllib.parse
 import xml.etree.ElementTree
-from typing import Dict, List, Literal, Tuple, Union
+from typing import Dict, List, Literal, Tuple, Union, get_args, get_type_hints
 
 import defusedxml.ElementTree
 import requests
@@ -21,13 +21,21 @@ from didl_lite import didl_lite
 from LumixG9IIRemoteControl.helpers import get_local_ip
 from LumixG9IIRemoteControl.http_event_consumer import HTTPRequestHandler, Server
 
+from .types import (
+    CamCGISettingDict,
+    CamCGISettingKeys,
+    FocusSteps,
+    ResourceDict,
+    SetSettingKeys,
+)
+
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel("INFO")
 
 
 def find_lumix_camera_via_sspd(
-    return_hostname=True,
+    return_hostname: bool = True,
 ) -> List[Union[str, upnpy.ssdp.SSDPDevice.SSDPDevice]]:
     upnp = upnpy.UPnP()
     devices = upnp.discover()
@@ -162,27 +170,51 @@ def decode_cds_query_response(text: str):
     )
 
 
-def didl_object_list_to_resource(
-    didl_object_list: List[Union[didl_lite.DidlObject, didl_lite.Descriptor]]
-) -> Dict[
-    Union[
-        Literal["CAM_RAW_JPG"],
-        Literal["CAM_RAW"],
-        Literal["CAM_TN"],
-        Literal["CAM_LRGTN"],
-        Literal["CAM_AVC_MP4_ORG"],
-        Literal["OriginalFileName"],
-        Literal["didl_object"],
-    ],
-    str,
-]:
-    lst = []
-    for didl_object in didl_object_list:
+def didl_split_protocol_info(resource = didl_lite.Resource):
+    
+    if str(resource.protocol_info).count(':') == 2:
+        # according to UDP spec, protocol info should be in form
+        # <protocol>’:’ <network>’:’<contentFormat>’:’<additionalInfo>
+        # but the camera has a ';' instead of the last ':'
+        str(resource.protocol_info).replace(';',':')
 
-        if isinstance(didl_object, didl_lite.ImageItem) or isinstance(
+    protocol, network, contentFormat, additionalInfo = str(resource.protocol_info).split(':')
+
+    key_value_strings = additionalInfo.split(';')
+    additionalInfoDict = {}
+    for key_value_string in key_value_strings:
+        key, value = key_value_string.split('=')
+        if key == 'OriginalFileName':
+            # strip extra quotes
+            value = value[1:-1]
+        additionalInfoDict[key] = value
+
+    return protocol, network, contentFormat, additionalInfoDict
+
+
+def patch_didl_object_with_resource_dict(didl_object: didl_lite.DidlObject):
+    didl_object.resource_dict = dict()
+    for res in didl_object.res:
+        protocol, network, contentFormat, additionalInfoDict = didl_split_protocol_info(res)
+        key = additionalInfoDict['PANASONIC.COM_PN']
+        didl_object.resource_dict[key] = additionalInfoDict
+        
+    
+
+
+
+def didl_object_list_to_resource(
+    didl_object_list: List[Union[didl_lite.DidlObject, didl_lite.Descriptor]],
+    start_index=0,
+) -> ResourceDict:
+    lst = []
+    for idx, didl_object in enumerate(didl_object_list):
+
+        if isinstance(didl_object, 
+                      didl_lite.ImageItem) or isinstance(
             didl_object, didl_lite.VideoItem
         ):
-            uri_dict = {}
+            uri_dict: ResourceDict = {"index": idx + start_index}
             for resource in didl_object.res:
                 # [Resource(uri='http://192.168.7.211:50001/DO01111793.JPG', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW_JPG;OriginalFileName='PANA1793.JPG'", size='9607680'),
                 #  Resource(uri='http://192.168.7.211:50001/DO01111793.RW2', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW;OriginalFileName='PANA1793.RW2'", size='39478272'),
@@ -204,11 +236,13 @@ def didl_object_list_to_resource(
             lst.append(uri_dict)
         elif isinstance(didl_object, didl_lite.Container):
             # TODO: implement
-            logger.error("Not implemented didl_object")
-            uri_dict = {}
+            logger.error("Not implemented didl_object %s", type(didl_object))
+            uri_dict: ResourceDict = {
+                "index": idx + start_index,
+                "CAM_TN": didl_object.x__thumb_uri,
+                "didl_object": didl_object,
+            }
             # Container(id='01111980DIR', parent_id='0', restricted='0', title='111-1980', creator=None, res=[], write_status='WRITABLE', child_count='30', create_class=None, search_class=None, searchable=None, never_playable=None, x__rec_group_type='Interval', x__thumb_uri='http://192.168.7.211:50001/DT01111980.JPG', x__rating_num='0', x__rating='0', descriptors=[], children=[])
-            uri_dict["CAM_TN"] = didl_object.x__thumb_uri
-            uri_dict["didl_object"] = didl_object
 
         else:
             logger.error(
@@ -239,12 +273,12 @@ class LumixG9IIRemoteControl:
         self._headers = {"User-Agent": "LUMIX Sync", "Connection": "Keep-Alive"}
 
         # caches for camera capabilities
-        self._capability_tree: defusedxml.ElementTree = None
-        self._allmenu_tree: defusedxml.ElementTree = None
-        self._language_tree: defusedxml.ElementTree = None
-        self._curmenu_tree: defusedxml.ElementTree = None
-        self._external_teleconverter_tree: defusedxml.ElementTree = None
-        self._touch_type_tree: defusedxml.ElementTree = None
+        self._capability_tree: xml.etree.ElementTree.ElementTree = None
+        self._allmenu_tree: xml.etree.ElementTree.ElementTree = None
+        self._language_tree: xml.etree.ElementTree.ElementTree = None
+        self._curmenu_tree: xml.etree.ElementTree.ElementTree = None
+        self._external_teleconverter_tree: xml.etree.ElementTree.ElementTree = None
+        self._touch_type_tree: xml.etree.ElementTree.ElementTree = None
 
         # static camera parameters
         self.device_info_dict: Dict[str, str] = {}
@@ -285,8 +319,8 @@ class LumixG9IIRemoteControl:
         if auto_connect:
             self.connect(host)
 
-    def _publish_state_change(self, type, data):
-        self._zmq_socket.send_pyobj({"type": type, "data": data}, zmq.NOBLOCK)
+    def _publish_state_change(self, typ, data):
+        self._zmq_socket.send_pyobj({"type": typ, "data": data}, zmq.NOBLOCK)
 
     def _zmq_consumer_function(self):
         while True:
@@ -379,9 +413,8 @@ class LumixG9IIRemoteControl:
     def host(self, host):
         self._host = host
         self._cam_cgi = f"http://{self._host}/cam.cgi"
-        return self._host
 
-    def connect(self, host=None):
+    def connect(self, host: str = None):
         """
         Parameters
         ----------
@@ -511,12 +544,14 @@ class LumixG9IIRemoteControl:
         return self.device_info_dict
 
     @_requires_connected
-    def _run_camcgi_from_dict(self, d: dict):
+    def run_camcgi_from_dict(self, d: CamCGISettingDict):
         params = {}
-        for key in ("mode", "type", "value", "value2"):
+        for key in get_type_hints(CamCGISettingDict).keys():
             if f"cmd_{key}" in d:
                 params[key] = d[f"cmd_{key}"]
-        logger.error('cam_cgi_params %s', params)
+            if key in d:
+                params[key] = d[key]
+        logger.info("cam_cgi_params %s", params)
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
@@ -541,8 +576,51 @@ class LumixG9IIRemoteControl:
             params={"mode": "getinfo", "type": "allmenu"},
         )
         self._allmenu_tree = self._check_ret_ok(ret)
+        # with open('allmenu.xml', 'wb') as f:
+        #     f.write(xml.etree.ElementTree.tostring(self._allmenu_tree),
+        #             xml_declaration=True,
+        #             encoding="utf-8",
+        #             short_empty_elements=False)
+
+        self._add_extra_menu()
+
         self.set_local_language()
         self._publish_state_change("allmenu_etree", self._allmenu_tree)
+
+    def _add_extra_menu(self):
+        """
+        Command for SD-card selection is not in allmenu xml.
+        Thus add it manually.
+        """
+        menuset = self._allmenu_tree.find("menuset")
+
+        extra_menu = xml.etree.ElementTree.SubElement(menuset, "extra_menu")
+        menu = xml.etree.ElementTree.SubElement(extra_menu, "menu")
+        item = xml.etree.ElementTree.SubElement(menu, "item")
+        item.set("id", "menu_item_id_sd")
+        item.set("title_id", "title_sdcard_select")
+        item.set("func_type", "select")
+        group = xml.etree.ElementTree.SubElement(item, "group")
+
+        language_en = self._allmenu_tree.find('menuset/titlelist/language[@code="en"]')
+        title = xml.etree.ElementTree.SubElement(language_en, "title")
+        title.set("id", "title_sdcard_select")
+        title.text = "SD Card"
+        # TODO: other languages
+
+        for i in (1, 2):
+            item = xml.etree.ElementTree.SubElement(group, "item")
+            title_id = f"title_sd_{i}"
+            item.set("id", f"menu_item_id_sd_{i}")
+            item.set("title_id", title_id)
+            item.set("cmd_mode", "setsetting")
+            item.set("cmd_type", "current_sd")
+            item.set("cmd_value", f"sd{i}")
+
+            title = xml.etree.ElementTree.SubElement(language_en, "title")
+            title.set("id", title_id)
+            title.text = f"SD Card {i}"
+            # TODO: other languages
 
     @_requires_connected
     def _get_curmenu(self):
@@ -552,7 +630,24 @@ class LumixG9IIRemoteControl:
             params={"mode": "getinfo", "type": "curmenu"},
         )
         self._curmenu_tree = self._check_ret_ok(ret)
-        self._curmenu_list = [i.attrib for i in self._curmenu_tree[1][:]]
+        menuinfo = self._curmenu_tree.find("menuinfo")
+        for i, tag in zip((1, 2), ("", "2")):
+            key = f"sd{tag}_memory"
+            if key in self.camera_state_dict:
+                item = xml.etree.ElementTree.SubElement(menuinfo, "item")
+                item.set("id", f"menu_item_id_sd_{i}")
+                if self.camera_state_dict[key] == "set":
+                    item.set("enable", "yes")
+                elif self.camera_state_dict[key] == "unset":
+                    item.set("enable", "no")
+                    # TODO this statement is not reflected as disabled item in RecordSettingWidget
+                else:
+                    logger.error(
+                        "cannot parse self.camera_state_dict[{%s}] with value %s",
+                        {self.camera_state_dict[key]},
+                        key,
+                    )
+
         self._publish_state_change("curmenu_etree", self._curmenu_tree)
 
     @_requires_connected
@@ -789,9 +884,7 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
 
     @_requires_connected
-    def move_focus(
-        self, step: Literal["wide-fast", "wide-normal", "tele-fast", "tele-normal"]
-    ):
+    def move_focus(self, step: FocusSteps):
         """
         Move focus in predefined steps.
         """
@@ -828,7 +921,7 @@ class LumixG9IIRemoteControl:
     @_requires_connected
     def touchcapt_ctrl(self, value):
         """
-        value: Union["enable", "disable", "off"]
+        value: Literal["enable", "disable", "off"]
         """
         ret = requests.get(
             self._cam_cgi,
@@ -943,7 +1036,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "get_content_info"},
         )
-        et = self._check_ret_ok(ret)
+        et: xml.etree.ElementTree.ElementTree = self._check_ret_ok(ret)
         d = {}
         for item in et:
             if item.tag != "result":
@@ -1102,23 +1195,20 @@ class LumixG9IIRemoteControl:
         self._check_ret_ok(ret)
 
     @_requires_connected
-    def get_setting(
-        self, setting
-    ) -> Dict[Literal["type", "value", "value2"], str]:
+    def get_setting(self, setting) -> Dict[Literal["type", "value", "value2"], str]:
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "getsetting", "type": setting},
         )
-        res = self._check_ret_ok(ret)[1]
+        res: xml.etree.ElementTree.Element = self._check_ret_ok(ret)[1]
+        data = {}
         if len(res.attrib) == 1:
-            data = {
-                "type": list(res.attrib.keys())[0],
-                "value": list(res.attrib.values())[0],
-            }
+            data["type"] = list(res.attrib.keys())[0]
+            data["value"] = list(res.attrib.values())[0]
 
-        if text:= self._check_ret_ok(ret)[1].text:
-            data["value2"] = text
+            if text := self._check_ret_ok(ret)[1].text:
+                data["value2"] = text
         return data
 
     @_requires_connected
@@ -1133,6 +1223,7 @@ class LumixG9IIRemoteControl:
             "play_sort_mode",
             "qmenu_disp_style",
             "photostyle2",
+            "current_sd",
         ]
         read_only_settings = [
             "liveviewsize",

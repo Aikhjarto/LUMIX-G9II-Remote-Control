@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         )
 
         self.camera_widget.cameraItemsChanged.connect(
-            self.play_mode_widget.play_mode_table_widget.update_resource_list
+            self.play_mode_widget.play_mode_table_widget.new_resource_list
         )
 
         self.play_mode_widget.imageListRequest.connect(
@@ -149,12 +149,15 @@ class MainWindow(QMainWindow):
         self.rec_mode_widget.setVisible(mode == "rec")
         self.play_mode_widget.setVisible(mode == "play")
 
-    def _quit(self, *args):
+    # noinspection PyUnusedLocal
+    @staticmethod
+    def _quit(*args):
         QApplication.quit()
 
 
 def main():
 
+    # noinspection PyUnusedLocal
     def sigint_handler(*args, **kwargs):
         QApplication.quit()
 

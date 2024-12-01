@@ -2,7 +2,7 @@ import logging
 import threading
 import traceback
 import xml.etree.ElementTree
-from typing import Dict
+from typing import Dict, Literal
 
 import zmq
 from qtpy import QtCore, QtGui
@@ -45,6 +45,9 @@ class ZMQReceiver(QtCore.QObject):
             self.dataChanged.emit(obj)
 
 
+semapho = QtCore.QSemaphore()
+
+
 class CameraWidget(QWidget, NoRaiseMixin):
 
     cameraStateChanged = Signal(dict)
@@ -78,7 +81,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         self.play_rec_mode_button = QPushButton("Play/Rec")
         self.play_rec_mode_button.setEnabled(False)
-        self.play_rec_mode_button.setCheckable(True)
         self.play_rec_mode_button.clicked.connect(self._play_rec_toggle)
 
         lv = QVBoxLayout()
@@ -162,6 +164,9 @@ class CameraWidget(QWidget, NoRaiseMixin):
             # self.play_rec_mode_button.setEnabled(False)
 
     def _find_camera(self, status: bool, line_edit: QLineEdit):
+        QApplication.sendEvent(
+            self, QtGui.QStatusTipEvent(f"Searching for Camera on the network")
+        )
         try:
             camera_hostname = find_lumix_camera_via_sspd()
         except RuntimeError as e:
@@ -179,8 +184,10 @@ class CameraWidget(QWidget, NoRaiseMixin):
             self.connect_button.setEnabled(True)
 
     @Slot(dict)
-    def run_camcgi_from_dict(self, data: Dict):
-        self.g9ii._run_camcgi_from_dict(data)
+    def run_camcgi_from_dict(
+        self, data: Dict[Literal["mode", "type", "value", "value2"], str]
+    ):
+        return self.g9ii.run_camcgi_from_dict(data)
 
     @Slot(object)
     def _zmq_consumer_function(self, event):
@@ -189,7 +196,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
                 self.cameraStateChanged.emit(event["data"])
                 if event["data"]["cammode"] != self._old_cammode:
                     self.cameraModeChanged.emit(event["data"]["cammode"])
-                    self._old_cammode != event["data"]["cammode"]
+                    self._old_cammode = event["data"]["cammode"]
 
             elif event["type"] == "allmenu_etree":
                 self.cameraAllmenuChanged.emit(event["data"])
@@ -222,11 +229,12 @@ class CameraWidget(QWidget, NoRaiseMixin):
             logger.error("%s", traceback.format_exception(e))
 
     @_no_raise
-    def _play_rec_toggle(self, *args):
+    def _play_rec_toggle(self):
         self.setStatusTip("Waiting for camera")
-        if self.play_rec_mode_button.isChecked():
+        cammode = self.g9ii.camera_state_dict.get("cammode")
+        if cammode == "play":
             self.g9ii.set_recmode()
-        else:
+        elif cammode == "rec":
             self.g9ii.set_playmode()
         # todo freeze until new mode is set in camera (signal cameraModeChanged is emitted)
 
@@ -242,8 +250,37 @@ class CameraWidget(QWidget, NoRaiseMixin):
             else:
                 function()
 
+    def query_all_items_batched(self, d):
+        logger.info("query_all_items_batched: %s", d)
+        self.g9ii.raw_img_send_enable()
+        # content_info_dict = self.get_content_info()
+        # {"current_position": 126, "total_content_number": 388, "content_number": 127}
+        n_bulk = 15
+        # logger.info("%s", content_info_dict)
+        # n_iterations = math.ceil(content_info_dict["total_content_number"] / n_bulk)
+        TotalMatches = float("inf")
+        TotalNumberReturned = 0
+        item_list = []
+        i = 0
+        while TotalNumberReturned < TotalMatches:
+            logger.info("Item query %d/%s", TotalNumberReturned, TotalMatches)
+            (
+                soap_xml,
+                didl_lite_xml,
+                didl_object_list,
+                TotalMatches,
+                NumberReturned,
+                container_id,
+            ) = self.query_items_on_sdcard(
+                StartingIndex=i * n_bulk, RequestedCount=n_bulk, **kwargs
+            )
+            i = i + 1
+
+            TotalNumberReturned = TotalNumberReturned + NumberReturned
+            item_list.extend(didl_object_list)
+        return item_list
+
     def query_all_items(self, d):
-        QApplication.sendEvent(self, QtGui.QStatusTipEvent(f"Query Items {d}"))
         logger.info("query_all_items: %s", d)
 
         data = self.g9ii.query_all_items_on_sdcard(**d)

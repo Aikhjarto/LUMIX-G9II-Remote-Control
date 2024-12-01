@@ -2,11 +2,12 @@ import logging
 import pprint
 import traceback
 import xml.etree.ElementTree
-from typing import Dict, List, Literal, Union
+from typing import Dict, List, Literal, Tuple, Union
 
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Qt, Signal, Slot
 from qtpy.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QGraphicsScene,
@@ -44,7 +45,17 @@ class RecordSettingsWidget(QTabWidget):
             LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl
         ) = g9ii
         self._allmenu_parent_map = {}
-        self._id_map: Dict[str, QWidget] = {}
+        self._id_map: Dict[
+            str,
+            Union[
+                QLabel,
+                QButtonGroup,
+                QPushButton,
+                QLineEdit,
+                Tuple[QComboBox, int],
+                Tuple[QRadioButton, int],
+            ],
+        ] = {}
         self._setsetting_map: Dict[str, Union[QComboBox, QLineEdit]] = {}
         super().__init__(*args, **kwargs)
 
@@ -62,11 +73,15 @@ class RecordSettingsWidget(QTabWidget):
 
         for item in curmenu_tree.findall(".//item"):
             # TODO implement missing
-            # if not item.attrib["id"] in self._id_map:
-            #     print("missing", item.attrib["id"])
-            #     continue
+            instance = self._id_map.get(item.attrib["id"])
+            if not instance:
+                logger.debug(
+                    "Cannot find %s in self._id_map. "
+                    "Most likely an entry in curmenu was not in allmenu",
+                    item.attrib["id"],
+                )
+                continue
 
-            # print(self._id_map[item.attrib["id"]], item.attrib["enable"])
             if item.attrib["enable"] == "yes":
                 enabled = True
             elif item.attrib["enable"] == "no":
@@ -74,53 +89,71 @@ class RecordSettingsWidget(QTabWidget):
             else:
                 raise RuntimeError()
 
-            if isinstance(self._id_map[item.attrib["id"]], tuple):
-                combo_box: QComboBox = self._id_map[item.attrib["id"]][0]
-                idx = self._id_map[item.attrib["id"]][1]
-                model: QtGui.QStandardItemModel = combo_box.model()
+            if isinstance(instance, tuple):
+                if isinstance(instance[0], QComboBox):
+                    combo_box = instance[0]
+                    idx = instance[1]
+                    model: QtGui.QStandardItemModel = combo_box.model()
 
-                i = model.item(idx)
-                item_flag = i.flags()
-                if enabled:
-                    item_flag = item_flag | Qt.ItemFlag.ItemIsSelectable
-                    item_flag = item_flag | Qt.ItemFlag.ItemIsEnabled
+                    i = model.item(idx)
+                    item_flag = i.flags()
+                    if enabled:
+                        item_flag = item_flag | Qt.ItemFlag.ItemIsSelectable
+                        item_flag = item_flag | Qt.ItemFlag.ItemIsEnabled
+                    else:
+                        item_flag = item_flag & ~Qt.ItemFlag.ItemIsSelectable
+                        item_flag = item_flag & ~Qt.ItemFlag.ItemIsEnabled
+
+                    # print(instance, item_flag)
+                    i.setFlags(item_flag)
                 else:
-                    item_flag = item_flag & ~Qt.ItemFlag.ItemIsSelectable
-                    item_flag = item_flag & ~Qt.ItemFlag.ItemIsEnabled
+                    raise NotImplementedError
 
-                i.setFlags(item_flag)
-
-                # print(self._id_map[item.attrib["id"]], item_flag)
-
-            elif hasattr(self._id_map[item.attrib["id"]], "setEnabled"):
-                self._id_map[item.attrib["id"]].setEnabled(enabled)
+            elif hasattr(instance, "setEnabled"):
+                instance.setEnabled(enabled)
             else:
-                print(self._id_map[item.attrib["id"]], item.attrib)
+                raise NotImplementedError((instance, item.attrib))
 
             if "value" in item.attrib:
-                if isinstance(self._id_map[item.attrib["id"]], tuple):
-                    combo_box: QComboBox = self._id_map[item.attrib["id"]][0]
+                if isinstance(instance, tuple):
+                    combo_box: QComboBox = instance[0]
                     idx = combo_box.findText(item.attrib["value"])
                     if idx == -1:
                         tmp = [combo_box.itemText(i) for i in range(combo_box.count())]
-                        print(
-                            f'Could not find value {item.attrib["value"]} in {item.attrib["id"]}, but {tmp}'
+                        logger.error(
+                            "Could not find value %s in %s, but %s ",
+                            item.attrib["value"],
+                            item.attrib["id"],
+                            tmp,
                         )
                     else:
                         # TODO: setCurrentIndex triggers callback, but here it should not
-                        print(f'Setting {item.attrib["id"]} to  {item.attrib["value"]}')
+                        logger.error(
+                            f'Setting {item.attrib["id"]} to {item.attrib["value"]}'
+                        )
                         combo_box.setCurrentIndex(idx)
-
-            if "option" in item.attrib or "option2" in item.attrib:
-                print("handle attribs", item.attrib)
+            s = set(item.attrib.keys())
+            s.remove("id")
+            s.remove("enable")
+            if "value" in s:
+                s.remove("value")
+            if len(s) > 0:  # "option" in item.attrib or "option2" in item.attrib:
+                logger.error("handle attribs %s", item.attrib)
 
     @Slot(xml.etree.ElementTree.ElementTree)
     def apply_allmenu_xml(self, allmenu_tree: xml.etree.ElementTree.ElementTree):
+        if self.count() > 1:
+            # ignore when already initialized
+            return
 
         self._allmenu_parent_map = {c: p for p in allmenu_tree.iter() for c in p}
 
         tab_names = allmenu_tree.find("menuset")
         for tab_name in tab_names:
+            
+            if tab_name.tag == "record_qmenu":
+                # TODO: skip Q-menu for now since it would require double entries in self._id_map
+                continue
             logger.debug(tab_name.tag)
             menu = tab_name.find("menu")
             if not menu:
@@ -147,49 +180,70 @@ class RecordSettingsWidget(QTabWidget):
 
         layout = QVBoxLayout()
         for item in items:
+            
+            # if item.attrib["id"].startswith('menu_item_id_recmode'):
+            #     breakpoint()
             func_type = item.attrib.get("func_type", "")
+            # if func_type == 'sp_embeded_recmode':
+            #     breakpoint()
             grouped_items = item.findall("group/")
             if grouped_items:
-
+                # TODO: sp_embeded_recmode has nested groups
                 if func_type == "select" or func_type.startswith("sp_embeded"):
+                    if len(grouped_items) > 1:
 
-                    combo_box = QComboBox()
-                    self._id_map[item.attrib["id"]] = combo_box
-                    model = combo_box.model()
-                    for idx, grouped_item in enumerate(grouped_items):
+                        combo_box = QComboBox()
+                        self._id_map[item.attrib["id"]] = combo_box
+                        for idx, grouped_item in enumerate(grouped_items):
 
-                        userData = grouped_item.attrib["cmd_value"]
-                        if "cmd_value2" in grouped_item.attrib:
-                            userData = (
-                                userData + "," + grouped_item.attrib["cmd_value2"]
+                            user_data = grouped_item.attrib["cmd_value"]
+                            if "cmd_value2" in grouped_item.attrib:
+                                user_data = (
+                                    user_data + "," + grouped_item.attrib["cmd_value2"]
+                                )
+
+                            combo_box.addItem(
+                                self._title_id(grouped_item.attrib),
+                                userData=user_data,
                             )
+                            logger.debug("adding", grouped_item.attrib["id"])
+                            # model_index = model.index(idx,0)
+                            # self._id_map[grouped_item.attrib['id']] = model.itemData(model_index)
+                            if grouped_item.attrib["id"] in self._id_map:
+                                logger.error(
+                                    f'Duplicate entry {grouped_item.attrib["cmd_type"]} in _id_map'
+                                )
 
-                        combo_box.addItem(
-                            self._title_id(grouped_item.attrib),
-                            userData=userData,
-                        )
-                        logger.debug("adding", grouped_item.attrib["id"])
-                        # model_index = model.index(idx,0)
-                        # self._id_map[grouped_item.attrib['id']] = model.itemData(model_index)
-                        self._id_map[grouped_item.attrib["id"]] = (combo_box, idx)
-                        if grouped_item.attrib["cmd_mode"] == "setsetting":
-                            if (
-                                grouped_item.attrib["cmd_type"]
-                                not in self._setsetting_map
-                            ):
-                                self._setsetting_map[
+                            self._id_map[grouped_item.attrib["id"]] = (combo_box, idx)
+                            if grouped_item.attrib["cmd_mode"] == "setsetting":
+                                if (
                                     grouped_item.attrib["cmd_type"]
-                                ] = combo_box
-                    combo_box.setCurrentIndex(-1)
-                    val2 = [grouped_item.attrib for grouped_item in grouped_items]
-                    combo_box.currentIndexChanged.connect(
-                        lambda x, val=val2: self.index_changed(val, x)
-                    )
+                                    not in self._setsetting_map
+                                ):
+                                    self._setsetting_map[
+                                        grouped_item.attrib["cmd_type"]
+                                    ] = combo_box
+                        combo_box.setCurrentIndex(-1)
+                        val2 = [grouped_item.attrib for grouped_item in grouped_items]
+                        combo_box.currentIndexChanged.connect(
+                            lambda x, val=val2: self.index_changed(val, x)
+                        )
 
-                    l = QHBoxLayout()
-                    l.addWidget(QLabel(self._title_id(item.attrib)))
-                    l.addWidget(combo_box)
-                    layout.addLayout(l)
+                        sub_layout = QHBoxLayout()
+                        sub_layout.addWidget(QLabel(self._title_id(item.attrib)))
+                        sub_layout.addWidget(combo_box)
+                        layout.addLayout(sub_layout)
+
+                    else:
+                        button_group = QButtonGroup()
+                        self._id_map[item.attrib["id"]] = button_group
+                        for idx, grouped_item in enumerate(grouped_items):
+                            radio_button = QRadioButton()
+                            radio_button.setText(self._title_id(grouped_item.attrib))
+                            self._id_map[grouped_item.attrib["id"]] = (
+                                radio_button,
+                                idx,
+                            )
 
                 else:
                     raise NotImplementedError(item.attrib)
@@ -238,7 +292,7 @@ class RecordSettingsWidget(QTabWidget):
                             )
                             button = QPushButton(text=friendly_name)
                             button.pressed.connect(
-                                lambda: self.g9ii._run_camcgi_from_dict(item.attrib)
+                                lambda: self.g9ii.run_camcgi_from_dict(item.attrib)
                             )
                             self._id_map[item.attrib["id"]] = button
 
@@ -264,22 +318,19 @@ class RecordSettingsWidget(QTabWidget):
     def apply_current_settings(
         self, data: List[Dict[Literal["type", "value", "value2"], str]]
     ):
-        print('xxx', data)
-        breakpoint()
-
         for item in data:
 
             if item["type"] in self._setsetting_map:
                 widget = self._setsetting_map[item["type"]]
                 if isinstance(widget, QComboBox):
-                    userData = item["value"]
+                    user_data = item["value"]
                     if "value2" in item:
-                        userData = userData + "," + item["value2"]
+                        user_data = user_data + "," + item["value2"]
 
-                    index = widget.findData(userData)
+                    index = widget.findData(user_data)
                     if index == -1:
                         logger.error(
-                            f"cannot find value {userData} in QComboBox for {item['type']}"
+                            f"cannot find value {user_data} in QComboBox for {item['type']}"
                         )
                     else:
                         widget.blockSignals(True)
@@ -295,12 +346,11 @@ class RecordSettingsWidget(QTabWidget):
 
     @_no_raise
     def index_changed(self, val, i):
-        # print("cam_cgi_dict", val[i])
         try:
-            ret = self.g9ii._run_camcgi_from_dict(val[i])
+            self.g9ii.run_camcgi_from_dict(val[i])
         except RuntimeError as e:
             traceback.print_exception(e)
-        
+
     @_no_raise
     def _title_id(self, d: dict) -> str:
         if "title_id" in d:
@@ -314,4 +364,4 @@ class RecordSettingsWidget(QTabWidget):
         x = d.copy()
         x["cmd_value"] = lineedit.text()
         print("cam_cgi_dict", x)
-        self.g9ii._run_camcgi_from_dict(x)
+        self.g9ii.run_camcgi_from_dict(x)

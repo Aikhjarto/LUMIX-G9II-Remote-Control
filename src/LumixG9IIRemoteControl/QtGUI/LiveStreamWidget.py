@@ -43,6 +43,8 @@ class LiveStreamWidget(QLabel):
         self.udp_socket.bind(QtNetwork.QHostAddress.Any, 49152)
         self.udp_socket.readyRead.connect(self.readPendingDatagrams)
 
+        self._drag_start_was_sent = True
+
     @Slot()
     def readPendingDatagrams(self):
         while self.udp_socket.hasPendingDatagrams():

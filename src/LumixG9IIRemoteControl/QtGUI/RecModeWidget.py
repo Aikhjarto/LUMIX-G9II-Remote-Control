@@ -10,6 +10,7 @@ from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -23,12 +24,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-logging.basicConfig()
-logger = logging.getLogger()
-
-
 from .LiveStreamWidget import LiveStreamWidget
 from .RecordSettingsWidget import RecordSettingsWidget
+
+logging.basicConfig()
+logger = logging.getLogger()
 
 
 class RecModeWidget(QWidget):
@@ -73,22 +73,24 @@ class RecModeWidget(QWidget):
             lambda _: self.cameraCommandRequest.emit({"function": "lcd_on"})
         )
 
-        self.touchcapt_ctrl_button = QPushButton("touchcapt_ctrl")
+        self.touchcapt_ctrl_button = QPushButton("Touch: Aperture")
         self.touchcapt_ctrl_button.setCheckable(True)
         self.touchcapt_ctrl_button.clicked.connect(self._touchcapt_toggle)
 
-        self.touchae_ctrl_button = QPushButton("touchae_ctrl")
+        self.touchae_ctrl_button = QPushButton("Touch: AE")
         self.touchae_ctrl_button.setCheckable(True)
         self.touchae_ctrl_button.clicked.connect(self._touchae_toggle)
 
         control_layout1 = QHBoxLayout()
         control_layout1.addWidget(caputer_button)
         control_layout1.addWidget(self.rec_button)
-        control_layout1.addWidget(self.livestream_button)
         control_layout1.addWidget(oneshot_af_button)
-        control_layout1.addWidget(lcd_on_button)
-        control_layout1.addWidget(self.touchcapt_ctrl_button)
-        control_layout1.addWidget(self.touchae_ctrl_button)
+
+        touch_layout = QGridLayout()
+        touch_layout.addWidget(self.livestream_button, 0, 0)
+        touch_layout.addWidget(lcd_on_button, 0, 1)
+        touch_layout.addWidget(self.touchcapt_ctrl_button, 1, 0)
+        touch_layout.addWidget(self.touchae_ctrl_button, 1, 1)
 
         move_focus_wide_fast = QPushButton("f<<")
         move_focus_wide_fast.setToolTip("Move focus wide fast")
@@ -120,14 +122,17 @@ class RecModeWidget(QWidget):
             )
         )
 
-        control_layout2 = QHBoxLayout()
-        control_layout2.addWidget(move_focus_wide_fast)
-        control_layout2.addWidget(move_focus_wide_normal)
-        control_layout2.addWidget(move_focus_tele_normal)
-        control_layout2.addWidget(move_focus_tele_fast)
-        
+        focus_layout = QGridLayout()
+        focus_layout.addWidget(move_focus_wide_fast, 0, 0)
+        focus_layout.addWidget(move_focus_wide_normal, 0, 1)
+        focus_layout.addWidget(move_focus_tele_normal, 1, 1)
+        focus_layout.addWidget(move_focus_tele_fast, 1, 0)
 
         self.lens_info_label = QLabel()
+        control_layout2 = QHBoxLayout()
+        control_layout2.addLayout(focus_layout)
+        control_layout2.addLayout(touch_layout)
+
         control_layout2.addWidget(self.lens_info_label)
 
         control_layout = QVBoxLayout()

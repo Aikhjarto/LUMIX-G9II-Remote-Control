@@ -12,3 +12,5 @@ traitlets
 pyzmq
 PySide6
 qtpy
+qtconsole
+bleak

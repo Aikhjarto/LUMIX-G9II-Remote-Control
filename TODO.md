@@ -22,6 +22,7 @@ https://play.google.com/store/apps/details?id=com.samueljhuf.upnp_explorer&hl=de
 
 https://github.com/StevenLooman/python-didl-lite/blob/master/didl_lite/didl_lite.py
 
+```
 def list_directory(device: upnpy.ssdp.SSDPDevice.SSDPDevice):
     service = device.services['ContentDirectory']
     #service.actions()
@@ -31,4 +32,4 @@ def list_directory(device: upnpy.ssdp.SSDPDevice.SSDPDevice):
     
     for argument in action.arguments:
         print(argument.name, argument.direction, argument.related_state_variable, argument.return_value)
-
+```

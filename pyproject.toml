@@ -29,7 +29,9 @@ dependencies = [
 	"python-didl-lite",
 	"IPython",
 	"traitlets",
-	"pyzmq"]
+	"pyzmq",
+	"qtconsole",
+	"bleak"]
 
 dynamic = ["version"]
 
