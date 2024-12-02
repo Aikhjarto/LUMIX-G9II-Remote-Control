@@ -60,8 +60,8 @@ class MainWindow(QMainWindow):
             self.camera_widget.execute_camera_command
         )
 
-        self.camera_widget.cameraItemsChanged.connect(
-            self.play_mode_widget.play_mode_table_widget.new_resource_list
+        self.camera_widget.cameraNewItemsList.connect(
+            self.play_mode_widget.play_mode_table_widget.new_camera_content_list
         )
 
         self.play_mode_widget.imageListRequest.connect(

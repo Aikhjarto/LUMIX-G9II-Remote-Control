@@ -2,9 +2,10 @@ import logging
 import threading
 import traceback
 import xml.etree.ElementTree
-from typing import Dict, Literal
+from typing import Dict, List, Literal, Union
 
 import zmq
+from didl_lite import didl_lite
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Signal, Slot
 from qtpy.QtWidgets import (
@@ -21,7 +22,7 @@ from qtpy.QtWidgets import (
 
 import LumixG9IIRemoteControl.LumixG9IIRemoteControl
 from LumixG9IIRemoteControl.LumixG9IIRemoteControl import (
-    didl_object_list_to_resource,
+    didl_object_list_to_camera_content_list,
     find_lumix_camera_via_sspd,
 )
 from LumixG9IIRemoteControl.QtGUI.NoRaise import NoRaiseMixin
@@ -56,7 +57,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
     cameraEvent = Signal(object)
     cameraConnected = Signal(dict)
     cameraDisconnected = Signal()
-    cameraItemsChanged = Signal(list)
+    cameraNewItemsList = Signal(object)
     cameraModeChanged = Signal(str)
     cameraConnectionStateChanged = Signal(str)
     cameraSettingsChanged = Signal(list)
@@ -250,7 +251,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
             else:
                 function()
 
-    def query_all_items_batched(self, d):
+    def query_all_items_batched(self, d, **kwargs):
         logger.info("query_all_items_batched: %s", d)
         self.g9ii.raw_img_send_enable()
         # content_info_dict = self.get_content_info()
@@ -285,5 +286,5 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         data = self.g9ii.query_all_items_on_sdcard(**d)
         # data = self.g9ii.query_items_on_sdcard(*args, **kwargs)
-        data2 = didl_object_list_to_resource(data)
-        self.cameraItemsChanged.emit(data2)
+        data2 = didl_object_list_to_camera_content_list(data)
+        self.cameraNewItemsList.emit(data2)

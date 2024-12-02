@@ -7,11 +7,13 @@ from typing import Dict, List, Literal, Tuple, Union
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Qt, Signal, Slot
 from qtpy.QtWidgets import (
+    QBoxLayout,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -71,6 +73,7 @@ class RecordSettingsWidget(QTabWidget):
     @Slot(xml.etree.ElementTree.ElementTree)
     def apply_curmenu_xml(self, curmenu_tree: xml.etree.ElementTree.ElementTree):
 
+        return
         for item in curmenu_tree.findall(".//item"):
             # TODO implement missing
             instance = self._id_map.get(item.attrib["id"])
@@ -95,17 +98,24 @@ class RecordSettingsWidget(QTabWidget):
                     idx = instance[1]
                     model: QtGui.QStandardItemModel = combo_box.model()
 
-                    i = model.item(idx)
-                    item_flag = i.flags()
-                    if enabled:
-                        item_flag = item_flag | Qt.ItemFlag.ItemIsSelectable
-                        item_flag = item_flag | Qt.ItemFlag.ItemIsEnabled
-                    else:
-                        item_flag = item_flag & ~Qt.ItemFlag.ItemIsSelectable
-                        item_flag = item_flag & ~Qt.ItemFlag.ItemIsEnabled
+                    if i := model.item(idx):
+                        item_flag = i.flags()
+                        if enabled:
+                            item_flag = item_flag | Qt.ItemFlag.ItemIsSelectable
+                            item_flag = item_flag | Qt.ItemFlag.ItemIsEnabled
+                        else:
+                            item_flag = item_flag & ~Qt.ItemFlag.ItemIsSelectable
+                            item_flag = item_flag & ~Qt.ItemFlag.ItemIsEnabled
 
-                    # print(instance, item_flag)
-                    i.setFlags(item_flag)
+                        # print(instance, item_flag)
+                        i.setFlags(item_flag)
+                    else:
+                        logger.error(
+                            "Combobox %s has no item at index %s",
+                            item.attrib["id"],
+                            idx,
+                        )
+
                 else:
                     raise NotImplementedError
 
@@ -150,7 +160,7 @@ class RecordSettingsWidget(QTabWidget):
 
         tab_names = allmenu_tree.find("menuset")
         for tab_name in tab_names:
-            
+
             if tab_name.tag == "record_qmenu":
                 # TODO: skip Q-menu for now since it would require double entries in self._id_map
                 continue
@@ -172,6 +182,124 @@ class RecordSettingsWidget(QTabWidget):
 
         # pprint.pprint(self._id_map)
 
+    def _add_select_item(self, item: xml.etree.ElementTree.Element, layout: QBoxLayout):
+        grouped_items = item.findall("group/")
+        combo_box = QComboBox()
+        self._id_map[item.attrib["id"]] = combo_box
+        for idx, grouped_item in enumerate(grouped_items):
+            user_data = grouped_item.attrib["cmd_value"]
+            if "cmd_value2" in grouped_item.attrib:
+                user_data = user_data + "," + grouped_item.attrib["cmd_value2"]
+
+            combo_box.addItem(
+                self._title_id(grouped_item.attrib),
+                userData=user_data,
+            )
+            logger.debug("adding", grouped_item.attrib["id"])
+            # model_index = model.index(idx,0)
+            # self._id_map[grouped_item.attrib['id']] = model.itemData(model_index)
+            if grouped_item.attrib["id"] in self._id_map:
+                logger.error(
+                    f'Duplicate entry {grouped_item.attrib["cmd_type"]} in _id_map'
+                )
+
+            self._id_map[grouped_item.attrib["id"]] = (combo_box, idx)
+            if grouped_item.attrib["cmd_mode"] == "setsetting":
+                if grouped_item.attrib["cmd_type"] not in self._setsetting_map:
+                    self._setsetting_map[grouped_item.attrib["cmd_type"]] = combo_box
+            combo_box.setCurrentIndex(-1)
+            val2 = [grouped_item.attrib for grouped_item in grouped_items]
+            combo_box.currentIndexChanged.connect(
+                lambda x, val=val2: self.index_changed(val, x)
+            )
+
+        sub_layout = QHBoxLayout()
+        sub_layout.addWidget(QLabel(self._title_id(item.attrib)))
+        sub_layout.addWidget(combo_box)
+        layout.addLayout(sub_layout)
+
+    def _add_item(self, item: xml.etree.ElementTree.Element, layout: QBoxLayout, menu):
+        func_type = item.attrib.get("func_type", "")
+
+        friendly_name = self.g9ii.get_localized_setting_name(item.attrib["title_id"])
+
+        if func_type == "select":
+            self._add_select_item(item, layout)
+
+        elif func_type.startswith("sp_embeded_"):
+            # sp_embeded_*
+            #  * can have no children,
+            #  * an empty group as child or a group with items as children
+            if group := item.find("group"):
+                sub_layout = QHBoxLayout()
+                # self._id_map[item.attrib["id"]] = sub_layout
+                # sub_layout.addWidget(QLabel(friendly_name))
+                logger.error("Items of %s: %s", func_type, group)
+                sub_sub_layout = QVBoxLayout()
+                for sub_item in group.findall("item"):
+                    self._add_item(sub_item, sub_sub_layout, menu)
+                sub_layout.addLayout(sub_sub_layout)
+
+                group_box = QGroupBox(friendly_name)
+                self._id_map[item.attrib["id"]] = QGroupBox
+                group_box.setLayout(sub_layout)
+                layout.addWidget(group_box)
+
+        elif func_type == "submenu":
+            self._id_map[item.attrib["id"]] = layout
+            w = self._parse_menu(item.find("menu"))
+            if w:
+                group_box = QGroupBox(friendly_name)
+                sub_menu_layout = QHBoxLayout()
+                sub_menu_layout.addWidget(w)
+                group_box.setLayout(sub_menu_layout)
+                layout.addWidget(group_box)
+        elif item.attrib.get("cmd_mode") == "setsetting":
+            if (
+                item.attrib.get("cmd_value") == "__value__"
+                or item.attrib.get("cmd_value2") == "__value__"
+            ):
+                line_edit = QLineEdit()
+                line_edit.setPlaceholderText("mlbel")
+                line_edit.returnPressed.connect(
+                    lambda x=item.attrib, y=line_edit: self._cam_cgi_from_lineedit(x, y)
+                )
+                self._id_map[item.attrib["id"]] = line_edit
+                if item.attrib.get("cmd_type") not in self._setsetting_map:
+                    self._setsetting_map[item.attrib.get("cmd_type")] = line_edit
+
+                l = QHBoxLayout()
+                l.addWidget(QLabel(friendly_name))
+                l.addWidget(line_edit)
+                layout.addLayout(l)
+            else:
+
+                # TODO The baroque parent_map could possible replaced by an
+                # additional parameter parent_item to _parse_menu
+
+                button = QPushButton(text=friendly_name)
+                button.pressed.connect(
+                    lambda: self.g9ii.run_camcgi_from_dict(item.attrib)
+                )
+                self._id_map[item.attrib["id"]] = button
+
+                if "title_id" in self._allmenu_parent_map[menu].attrib:
+                    friendly_menu_name = self.g9ii.get_localized_setting_name(
+                        self._allmenu_parent_map[menu].attrib["title_id"]
+                    )
+                    l = QHBoxLayout()
+                    l.addWidget(QLabel(friendly_menu_name))
+                    l.addWidget(button)
+                    layout.addLayout(l)
+                else:
+                    layout.addWidget(button)
+
+        else:
+            logger.error("Handle me" + str(item.attrib))
+            label = QLabel("Handle me" + str(item.attrib))
+            self._id_map[item.attrib["id"]] = label
+            layout.addWidget(label)
+
     def _parse_menu(self, menu: xml.etree.ElementTree.Element) -> QWidget:
 
         items = menu.findall("./")
@@ -180,135 +308,8 @@ class RecordSettingsWidget(QTabWidget):
 
         layout = QVBoxLayout()
         for item in items:
-            
-            # if item.attrib["id"].startswith('menu_item_id_recmode'):
-            #     breakpoint()
-            func_type = item.attrib.get("func_type", "")
-            # if func_type == 'sp_embeded_recmode':
-            #     breakpoint()
-            grouped_items = item.findall("group/")
-            if grouped_items:
-                # TODO: sp_embeded_recmode has nested groups
-                if func_type == "select" or func_type.startswith("sp_embeded"):
-                    if len(grouped_items) > 1:
+            self._add_item(item, layout, menu)
 
-                        combo_box = QComboBox()
-                        self._id_map[item.attrib["id"]] = combo_box
-                        for idx, grouped_item in enumerate(grouped_items):
-
-                            user_data = grouped_item.attrib["cmd_value"]
-                            if "cmd_value2" in grouped_item.attrib:
-                                user_data = (
-                                    user_data + "," + grouped_item.attrib["cmd_value2"]
-                                )
-
-                            combo_box.addItem(
-                                self._title_id(grouped_item.attrib),
-                                userData=user_data,
-                            )
-                            logger.debug("adding", grouped_item.attrib["id"])
-                            # model_index = model.index(idx,0)
-                            # self._id_map[grouped_item.attrib['id']] = model.itemData(model_index)
-                            if grouped_item.attrib["id"] in self._id_map:
-                                logger.error(
-                                    f'Duplicate entry {grouped_item.attrib["cmd_type"]} in _id_map'
-                                )
-
-                            self._id_map[grouped_item.attrib["id"]] = (combo_box, idx)
-                            if grouped_item.attrib["cmd_mode"] == "setsetting":
-                                if (
-                                    grouped_item.attrib["cmd_type"]
-                                    not in self._setsetting_map
-                                ):
-                                    self._setsetting_map[
-                                        grouped_item.attrib["cmd_type"]
-                                    ] = combo_box
-                        combo_box.setCurrentIndex(-1)
-                        val2 = [grouped_item.attrib for grouped_item in grouped_items]
-                        combo_box.currentIndexChanged.connect(
-                            lambda x, val=val2: self.index_changed(val, x)
-                        )
-
-                        sub_layout = QHBoxLayout()
-                        sub_layout.addWidget(QLabel(self._title_id(item.attrib)))
-                        sub_layout.addWidget(combo_box)
-                        layout.addLayout(sub_layout)
-
-                    else:
-                        button_group = QButtonGroup()
-                        self._id_map[item.attrib["id"]] = button_group
-                        for idx, grouped_item in enumerate(grouped_items):
-                            radio_button = QRadioButton()
-                            radio_button.setText(self._title_id(grouped_item.attrib))
-                            self._id_map[grouped_item.attrib["id"]] = (
-                                radio_button,
-                                idx,
-                            )
-
-                else:
-                    raise NotImplementedError(item.attrib)
-
-            elif func_type == "submenu":
-                self._id_map[item.attrib["id"]] = layout
-                w = self._parse_menu(item.find("menu"))
-                if w:
-                    friendly_name = self.g9ii.get_localized_setting_name(
-                        item.attrib["title_id"]
-                    )
-                    sub_menu_layout = QHBoxLayout()
-                    sub_menu_layout.addWidget(QLabel(friendly_name))
-                    sub_menu_layout.addWidget(w)
-                    layout.addLayout(sub_menu_layout)
-            else:
-                friendly_name = self.g9ii.get_localized_setting_name(
-                    item.attrib["title_id"]
-                )
-
-                if item.attrib.get("cmd_mode") == "setsetting":
-                    if item.attrib.get("cmd_value") == "__value__":
-                        line_edit = QLineEdit()
-                        line_edit.setPlaceholderText("mlbel")
-                        line_edit.returnPressed.connect(
-                            lambda x=item.attrib, y=line_edit: self._cam_cgi_from_lineedit(
-                                x, y
-                            )
-                        )
-                        self._id_map[item.attrib["id"]] = line_edit
-                        if item.attrib.get("cmd_type") not in self._setsetting_map:
-                            self._setsetting_map[item.attrib.get("cmd_type")] = (
-                                line_edit
-                            )
-
-                        l = QHBoxLayout()
-                        l.addWidget(QLabel(friendly_name))
-                        l.addWidget(line_edit)
-                        layout.addLayout(l)
-                    else:
-                        # TODO The baroque parent_map could possible replaced by an
-                        # additional parameter parent_item to _parse_menu
-                        if "title_id" in self._allmenu_parent_map[menu].attrib:
-                            friendly_menu_name = self.g9ii.get_localized_setting_name(
-                                self._allmenu_parent_map[menu].attrib["title_id"]
-                            )
-                            button = QPushButton(text=friendly_name)
-                            button.pressed.connect(
-                                lambda: self.g9ii.run_camcgi_from_dict(item.attrib)
-                            )
-                            self._id_map[item.attrib["id"]] = button
-
-                            l = QHBoxLayout()
-                            l.addWidget(QLabel(friendly_menu_name))
-                            l.addWidget(button)
-                            layout.addLayout(l)
-                        else:
-                            label = QLabel(str(item.attrib))
-                            self._id_map[item.attrib["id"]] = label
-                            layout.addWidget(label)
-
-                else:
-                    label = QLabel(str(item.attrib))
-                    self._id_map[item.attrib["id"]] = label
-                    layout.addWidget(label)
             # print(m.attrib, )
         w = QWidget()
         w.setLayout(layout)
@@ -362,6 +363,9 @@ class RecordSettingsWidget(QTabWidget):
     @_no_raise
     def _cam_cgi_from_lineedit(self, d: dict, lineedit: QLineEdit):
         x = d.copy()
-        x["cmd_value"] = lineedit.text()
+        if x["cmd_value"] == "__value__":
+            x["cmd_value"] = lineedit.text()
+        if x.get("cmd_value2") == "__value__":
+            x["cmd_value2"] = lineedit.text()
         print("cam_cgi_dict", x)
         self.g9ii.run_camcgi_from_dict(x)

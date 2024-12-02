@@ -1,9 +1,11 @@
 import logging
 import os
+import pprint
 import urllib.parse
 import urllib.request
-from typing import Dict, Tuple, List
+from typing import Dict, List, Tuple
 
+from didl_lite import didl_lite
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QUrl, Signal, Slot
 from qtpy.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -27,7 +29,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..types import ResourceDict
+from ..types import CameraContentItem, CameraFileformatIdentfiers
+
 
 class QReadOnlyCheckBox(QCheckBox):
     def __init__(self, *args, **kwargs):
@@ -151,7 +154,7 @@ class PlayModeWidget(QWidget):
         QApplication.sendEvent(
             self,
             QtGui.QStatusTipEvent(
-                "Requesting SD Card Content with filter {filter_dict}"
+                f"Requesting SD Card Content with filter {filter_dict}"
             ),
         )
         self.imageListRequest.emit(filter_dict)
@@ -165,24 +168,28 @@ class PlayModeTableWidget(QTableWidget):
         self._headers: Dict[str, str] = dict()
 
         self._network_access_manager = QNetworkAccessManager(self)
-        self._network_access_manager.finished.connect(self._thumbnail_request_finished_callback)
+        self._network_access_manager.finished.connect(
+            self._thumbnail_request_finished_callback
+        )
 
         # map remote path to local table item
         self._items_dict: Dict[str, QTableWidgetItem] = {}
 
         # map row to underlying data for additional queries like download of RAW image
-        self._resource_dict: Dict[int, ResourceDict] = {}
+        self._camera_content_cache: Dict[int, CameraContentItem] = {}
 
         # map remote path to thumbnail, where the bytearray holds jpg encoded data
         # and the pixmap is a possibly scaled version to fit in the table
         self._thumbnail_cache: Dict[str, Tuple[QtGui.QPixmap, QtCore.QByteArray]] = {}
         self._large_thumbnail_height: int = 480
 
+        self._downloaded_checkbox_map: Dict[str, QReadOnlyCheckBox] = {}
+
         self.horizontalHeader().setStretchLastSection(True)
         self.setContextMenuPolicy(QtGui.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.contextMenuEvent)
 
-        self._local_folder: str = '.'
+        self._local_folder: str = "."
 
     def clear_cache(self):
         self._thumbnail_cache = {}
@@ -204,33 +211,29 @@ class PlayModeTableWidget(QTableWidget):
     @local_folder.setter
     def local_folder(self, folder: str):
         if not os.path.isdir(folder):
-            raise RuntimeError(f'{folder} is not a folder')
-        
-        self._local_folder
+            raise RuntimeError(f"{folder} is not a folder")
+
+        self._local_folder = folder
 
     def _update_downloaded_checkbox(self):
         for row in self.rowCount():
             raise RuntimeError
 
-    def get_local_filename(self, resource: ResourceDict):
-        # TODO folder path
-        local_filename = os.path.splitext(resource["OriginalFileName"])[0]
-        if "CAM_RAW" in resource:
-            local_filename += ".RW2"
-
-        if "CAM_RAW_JPG" in resource:
-            local_filename += ".JPG"
-
-        if "CAM_AVC_MP4_ORG" in resource:
-            local_filename += ".MP4"
-
-        return os.path.join(self._local_folder, local_filename)
+    def get_local_filenames(
+        self, content_item: CameraContentItem
+    ) -> Dict[CameraFileformatIdentfiers, str]:
+        d = {}
+        for key, value in content_item["resources"].items():
+            if original_filename := value["additional_info"].get("OriginalFileName"):
+                local_filename = os.path.join(self._local_folder, original_filename)
+                d[key] = local_filename
+        return d
 
     def download_large_thumbnail_for_selection(self):
         for rng in self.selectedRanges():
             for row in range(rng.topRow(), rng.bottomRow() + 1):
-                resource = self._resource_dict[row]
-                url = resource["CAM_LRGTN"]
+                resource = self._camera_content_cache[row]
+                url = resource["resources"]["CAM_LRGTN"]["res"].uri
                 item = self._new_thumbnail_image_item(
                     url, priority=QNetworkRequest.Priority.HighPriority
                 )
@@ -243,35 +246,24 @@ class PlayModeTableWidget(QTableWidget):
         for rng in self.selectedRanges():
             for row in range(rng.topRow(), rng.bottomRow() + 1):
 
-                resource = self._resource_dict[row]
+                resource = self._camera_content_cache[row]
                 # print(row, resource["OriginalFileName"])
+                local_filenames = self.get_local_filenames(resource)
+                for typ, local_filename in local_filenames.items():
+                    url = resource["resources"][typ]["res"].uri
+                    if not os.path.isfile(local_filename):
+                        logger.info("Downloading %s to %s", url, local_filename)
+                        QApplication.sendEvent(
+                            self,
+                            QtGui.QStatusTipEvent(
+                                f"Downloading {url} to {local_filename}"
+                            ),
+                        )
+                        urllib.request.urlretrieve(url, local_filename)
 
-                local_filename = os.path.join(self._local_folder,
-                                              os.path.splitext(resource["OriginalFileName"]))
-                
-                if "CAM_RAW" in resource:
-                    url = resource["CAM_RAW"]
-
-                if "CAM_RAW_JPG" in resource:
-                    url = resource["CAM_RAW_JPG"]
-
-                if "CAM_JPG_ORG" in resource:
-                    url = resource["CAM_JPG_ORG"]
-
-                if "CAM_AVC_MP4_ORG" in resource:
-                    url = resource["CAM_AVC_MP4_ORG"]
-
-                if not os.path.isfile(local_filename):
-                    logger.info("Downloading %s to %s", url, local_filename)
-                    QApplication.sendEvent(
-                        self,
-                        QtGui.QStatusTipEvent(
-                            f"Downloading {url} to {local_filename}"
-                        ),
+                    self._downloaded_checkbox_map[local_filename].setCheckState(
+                        QtCore.Qt.CheckState.Checked
                     )
-                    urllib.request.urlretrieve(url, local_filename)
-
-                self.cellWidget(row, 1).setCheckState(QtCore.Qt.CheckState.Checked)
 
         logger.info("Download done")
         QApplication.sendEvent(self, QtGui.QStatusTipEvent("Downloading done"))
@@ -296,48 +288,60 @@ class PlayModeTableWidget(QTableWidget):
 
         return item
 
-    def new_resource_list(self, resource_list: List[ResourceDict]):
+    def new_camera_content_list(self, camera_content_list: List[CameraContentItem]):
 
-        self._resource_dict = {}
+        self._camera_content_cache = {}
         self.clear()
         self.setColumnCount(4)
-        self.setRowCount(len(resource_list))
+        self.setRowCount(len(camera_content_list))
 
-        for row, resource in enumerate(resource_list):
+        for row, camera_content_item in enumerate(camera_content_list):
+            if not isinstance(camera_content_item["didl_object"], didl_lite.Item):
+                pprint.pprint("new_camera_content_list")
+                pprint.pprint(camera_content_item)
 
-            self._resource_dict[row] = resource
-
-            thumbnail_uri = resource["CAM_TN"]
-            item = self._new_thumbnail_image_item(thumbnail_uri)
-            self.setItem(row, 0, item)
-            self.resizeRowToContents(row)
-            self.resizeColumnToContents(0)
-
-            check_box = QReadOnlyCheckBox()
-            check_box.setToolTip("Item already on local computer")
-            self.setCellWidget(row, 1, check_box)
-            local_filename = self.get_local_filename(resource)
-            if os.path.isfile(local_filename):
-                self.cellWidget(row, 1).setCheckState(QtCore.Qt.CheckState.Checked)
-
-            if "CAM_ORG" in resource:
-                typ = 'JPG'
-            elif "CAM_RAW" in resource:
-                if "CAM_RAW_JPG" in resource:
-                    typ = 'RAW+JPG'
+            self._camera_content_cache[row] = camera_content_item
+            try:
+                if "CAM_TN" in camera_content_item:
+                    thumbnail_uri = camera_content_item["CAM_TN"]
                 else:
-                    typ = "RAW"
-            elif "CAM_AVC_MP4_ORG" in resource:
-                typ='MP4'
-            else:
-                logger.error('Cannot find type for resource %s', resource)
- 
-            description_item = QTableWidgetItem(typ)
+                    thumbnail_uri = camera_content_item["resources"]["CAM_TN"][
+                        "res"
+                    ].uri
+
+                item = self._new_thumbnail_image_item(thumbnail_uri)
+                self.setItem(row, 0, item)
+                self.resizeRowToContents(row)
+                self.resizeColumnToContents(0)
+            except Exception:
+                logger.error(
+                    "error parsing camera_content_item %s", camera_content_item
+                )
+                pass
+
+            local_filenames_dict = self.get_local_filenames(camera_content_item)
+
+            check_box_layout = QHBoxLayout()
+            for key, local_filename in local_filenames_dict.items():
+                check_box = QReadOnlyCheckBox()
+                check_box.setToolTip(f"{key} already on local computer?")
+                if os.path.isfile(local_filename):
+                    check_box.setCheckState(QtCore.Qt.CheckState.Checked)
+                self._downloaded_checkbox_map[local_filename] = check_box
+                check_box_layout.addWidget(check_box)
+            check_box_widget = QWidget()
+            check_box_widget.setLayout(check_box_layout)
+            self.setCellWidget(row, 1, check_box_widget)
+            self.resizeColumnToContents(1)
+
+            description_item = QTableWidgetItem(
+                str(type(camera_content_item["didl_object"]))
+            )
             self.setItem(row, 2, description_item)
-        
+            self.resizeColumnToContents(2)
 
             description_item = QTableWidgetItem()
-            description_item.setText(f"Resource {resource}")
+            description_item.setText(f"Resource {camera_content_item}")
             self.setItem(row, 3, description_item)
 
     def send_request(
@@ -346,7 +350,7 @@ class PlayModeTableWidget(QTableWidget):
         qurl = QUrl(url)
         qurl.setHost(self.host)
         request = QNetworkRequest(qurl)
-        if priority != None:
+        if priority is not None:
             request.setPriority(priority)
         for key, value in self._headers.items():
             request.setRawHeader(key.encode(), value.encode())
@@ -356,7 +360,7 @@ class PlayModeTableWidget(QTableWidget):
         if not reply.isFinished():
             logger.error("reply {reply} is not finished!")
             return
-        
+
         key = reply.url().path()
         data = reply.readAll()
         item = self._items_dict[key]
@@ -364,9 +368,11 @@ class PlayModeTableWidget(QTableWidget):
         pixmap = QtGui.QPixmap()
         pixmap.loadFromData(data)
 
-        logger.info(f"Got {reply.url().toString()} pixmap w/h {pixmap.width()}/{pixmap.height()}")
+        logger.info(
+            f"Got {reply.url().toString()} pixmap w/h {pixmap.width()}/{pixmap.height()}"
+        )
 
-        if pixmap.height()>self._large_thumbnail_height:
+        if pixmap.height() > self._large_thumbnail_height:
             pixmap = pixmap.scaledToHeight(self._large_thumbnail_height)
         item.setData(QtCore.Qt.ItemDataRole.DecorationRole, pixmap)
         item.setText("")

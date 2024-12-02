@@ -1,6 +1,5 @@
 import argparse
 import logging
-import math
 import pprint
 import subprocess
 import sys
@@ -9,7 +8,7 @@ import time
 import traceback
 import urllib.parse
 import xml.etree.ElementTree
-from typing import Dict, List, Literal, Tuple, Union, get_args, get_type_hints
+from typing import Dict, List, Literal, Tuple, Union, get_type_hints
 
 import defusedxml.ElementTree
 import requests
@@ -24,8 +23,9 @@ from LumixG9IIRemoteControl.http_event_consumer import HTTPRequestHandler, Serve
 from .types import (
     CamCGISettingDict,
     CamCGISettingKeys,
+    CameraContentItem,
+    CameraContentItemResource,
     FocusSteps,
-    ResourceDict,
     SetSettingKeys,
 )
 
@@ -170,21 +170,26 @@ def decode_cds_query_response(text: str):
     )
 
 
-def didl_split_protocol_info(resource = didl_lite.Resource):
-    
-    if str(resource.protocol_info).count(':') == 2:
+def didl_split_protocol_info(resource: didl_lite.Resource):
+    """
+    didl-lite won't split the protocol_info string according to UPnP.
+    Thus, have this helper function to do it.
+    """
+    string = str(resource.protocol_info)
+    if string.count(":") == 2:
         # according to UDP spec, protocol info should be in form
         # <protocol>’:’ <network>’:’<contentFormat>’:’<additionalInfo>
         # but the camera has a ';' instead of the last ':'
-        str(resource.protocol_info).replace(';',':')
+        string = string.replace(";", ":", 1)
+    else:
+        string = string
+    protocol, network, contentFormat, additionalInfo = string.split(":")
 
-    protocol, network, contentFormat, additionalInfo = str(resource.protocol_info).split(':')
-
-    key_value_strings = additionalInfo.split(';')
+    key_value_strings = additionalInfo.split(";")
     additionalInfoDict = {}
     for key_value_string in key_value_strings:
-        key, value = key_value_string.split('=')
-        if key == 'OriginalFileName':
+        key, value = key_value_string.split("=")
+        if key == "OriginalFileName":
             # strip extra quotes
             value = value[1:-1]
         additionalInfoDict[key] = value
@@ -192,62 +197,56 @@ def didl_split_protocol_info(resource = didl_lite.Resource):
     return protocol, network, contentFormat, additionalInfoDict
 
 
-def patch_didl_object_with_resource_dict(didl_object: didl_lite.DidlObject):
-    didl_object.resource_dict = dict()
+def didl_protocol_info_to_dict(
+    didl_object: didl_lite.DidlObject,
+) -> CameraContentItemResource:
+
+    # [Resource(uri='http://192.168.7.211:50001/DO01111793.JPG', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW_JPG;OriginalFileName='PANA1793.JPG'", size='9607680'),
+    #  Resource(uri='http://192.168.7.211:50001/DO01111793.RW2', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW;OriginalFileName='PANA1793.RW2'", size='39478272'),
+    #  Resource(uri='http://192.168.7.211:50001/DT01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
+    #  Resource(uri='http://192.168.7.211:50001/DL01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_MED;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+
+    # [Resource(uri='http://192.168.7.211:50001/DO01122900.MP4', protocol_info="http-get:*:application/octet-stream:DLNA.ORG_OP=01;PANASONIC.COM_PN=CAM_AVC_MP4_ORG;OriginalFileName='PANA2900.MP4'", size='2751475988', duration='0:13:30'),
+    #  Resource(uri='http://192.168.7.211:50001/DT01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
+    #  Resource(uri='http://192.168.7.211:50001/DL01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_SM;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+
+    # [content.attrib['panasonic_com_pn'] for content in g9ii._capability_tree.findall("contents_action_info/item/content")]
+
+    resource_dict: CameraContentItemResource = dict()
     for res in didl_object.res:
-        protocol, network, contentFormat, additionalInfoDict = didl_split_protocol_info(res)
-        key = additionalInfoDict['PANASONIC.COM_PN']
-        didl_object.resource_dict[key] = additionalInfoDict
-        
-    
+        protocol, network, contentFormat, additionalInfoDict = didl_split_protocol_info(
+            res
+        )
+        key = additionalInfoDict["PANASONIC.COM_PN"]
+        resource_dict[key] = {
+            "res": res,
+            "additional_info": additionalInfoDict,
+        }
+    return resource_dict
 
 
-
-def didl_object_list_to_resource(
-    didl_object_list: List[Union[didl_lite.DidlObject, didl_lite.Descriptor]],
+def didl_object_list_to_camera_content_list(
+    didl_object_list: List[Union[didl_lite.Item, didl_lite.Container]],
     start_index=0,
-) -> ResourceDict:
+) -> List[CameraContentItem]:
     lst = []
     for idx, didl_object in enumerate(didl_object_list):
 
-        if isinstance(didl_object, 
-                      didl_lite.ImageItem) or isinstance(
-            didl_object, didl_lite.VideoItem
-        ):
-            uri_dict: ResourceDict = {"index": idx + start_index}
-            for resource in didl_object.res:
-                # [Resource(uri='http://192.168.7.211:50001/DO01111793.JPG', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW_JPG;OriginalFileName='PANA1793.JPG'", size='9607680'),
-                #  Resource(uri='http://192.168.7.211:50001/DO01111793.RW2', protocol_info="http-get:*:application/octet-stream;PANASONIC.COM_PN=CAM_RAW;OriginalFileName='PANA1793.RW2'", size='39478272'),
-                #  Resource(uri='http://192.168.7.211:50001/DT01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
-                #  Resource(uri='http://192.168.7.211:50001/DL01111793.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_MED;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+        camera_content_item: CameraContentItem = {
+            "index": idx + start_index,
+            "didl_object": didl_object,
+            "resources": didl_protocol_info_to_dict(didl_object),
+        }
 
-                # [Resource(uri='http://192.168.7.211:50001/DO01122900.MP4', protocol_info="http-get:*:application/octet-stream:DLNA.ORG_OP=01;PANASONIC.COM_PN=CAM_AVC_MP4_ORG;OriginalFileName='PANA2900.MP4'", size='2751475988', duration='0:13:30'),
-                #  Resource(uri='http://192.168.7.211:50001/DT01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_TN', size='5000'),
-                #  Resource(uri='http://192.168.7.211:50001/DL01122900.JPG', protocol_info='http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_SM;DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=00900000000000000000000000000000;PANASONIC.COM_PN=CAM_LRGTN', size='100000')]
+        if container_thumb_uri := getattr(didl_object, "x__thumb_uri", None):
+            camera_content_item["CAM_TN"] = container_thumb_uri
 
-                # Only DO files have original filenames
-                protocol_info_fields = resource.protocol_info.split(";")
-                for protocol_info_field in protocol_info_fields:
-                    if protocol_info_field.startswith("PANASONIC.COM_PN="):
-                        typ = protocol_info_field[17:]
-                        uri_dict[typ] = resource.uri
-                    elif protocol_info_field.startswith("OriginalFileName="):
-                        uri_dict["OriginalFileName"] = protocol_info_field[18:-1]
-            lst.append(uri_dict)
-        elif isinstance(didl_object, didl_lite.Container):
-            # TODO: implement
-            logger.error("Not implemented didl_object %s", type(didl_object))
-            uri_dict: ResourceDict = {
-                "index": idx + start_index,
-                "CAM_TN": didl_object.x__thumb_uri,
-                "didl_object": didl_object,
-            }
-            # Container(id='01111980DIR', parent_id='0', restricted='0', title='111-1980', creator=None, res=[], write_status='WRITABLE', child_count='30', create_class=None, search_class=None, searchable=None, never_playable=None, x__rec_group_type='Interval', x__thumb_uri='http://192.168.7.211:50001/DT01111980.JPG', x__rating_num='0', x__rating='0', descriptors=[], children=[])
+        pprint.pprint("didl_object_list_to_camera_content_list")
+        pprint.pprint(camera_content_item)
 
-        else:
-            logger.error(
-                "Cannot parse didl object %s of type %s", didl_object, type(didl_object)
-            )
+        # Container(id='01111980DIR', parent_id='0', restricted='0', title='111-1980', creator=None, res=[], write_status='WRITABLE', child_count='30', create_class=None, search_class=None, searchable=None, never_playable=None, x__rec_group_type='Interval', x__thumb_uri='http://192.168.7.211:50001/DT01111980.JPG', x__rating_num='0', x__rating='0', descriptors=[], children=[])
+        lst.append(camera_content_item)
+
     return lst
 
 
@@ -265,7 +264,7 @@ class LumixG9IIRemoteControl:
         self.host = host
 
         # Drag continue events can come from GUI more rapidly than Wi-Fi transport to
-        # camera permits. Thus set a minimum interval an discard intermediate
+        # camera permits. Thus set a minimum interval and discard intermediate
         # coordinates.
         self.min_drag_continue_interval: float = float(min_drag_continue_interval)
         self._last_drag_continue_timestamp: float = None
@@ -596,18 +595,18 @@ class LumixG9IIRemoteControl:
 
         extra_menu = xml.etree.ElementTree.SubElement(menuset, "extra_menu")
         menu = xml.etree.ElementTree.SubElement(extra_menu, "menu")
+        language_en = self._allmenu_tree.find('menuset/titlelist/language[@code="en"]')
+        # TODO: other languages
+
+        # add sd-card selection
         item = xml.etree.ElementTree.SubElement(menu, "item")
         item.set("id", "menu_item_id_sd")
         item.set("title_id", "title_sdcard_select")
         item.set("func_type", "select")
         group = xml.etree.ElementTree.SubElement(item, "group")
-
-        language_en = self._allmenu_tree.find('menuset/titlelist/language[@code="en"]')
         title = xml.etree.ElementTree.SubElement(language_en, "title")
         title.set("id", "title_sdcard_select")
         title.text = "SD Card"
-        # TODO: other languages
-
         for i in (1, 2):
             item = xml.etree.ElementTree.SubElement(group, "item")
             title_id = f"title_sd_{i}"
@@ -620,7 +619,129 @@ class LumixG9IIRemoteControl:
             title = xml.etree.ElementTree.SubElement(language_en, "title")
             title.set("id", title_id)
             title.text = f"SD Card {i}"
-            # TODO: other languages
+
+        # add shutter speed
+        item = xml.etree.ElementTree.SubElement(menu, "item")
+        item.set("id", "menu_item_id_shtrspeed")
+        item.set("title_id", "title_shtrspeed")
+        item.set("func_type", "select")
+        group = xml.etree.ElementTree.SubElement(item, "group")
+        for cmd_value, text in (
+            ("3328/256", "8000"),
+            ("3243/256", "6400"),
+            ("3158/256", "5000"),
+            ("3072/256", "4000"),
+            ("2987/256", "3200"),
+            ("2902/256", "2500"),
+            ("2816/256", "2000"),
+            ("2731/256", "1600"),
+            ("2646/256", "1300"),
+            ("2560/256", "1000"),
+            ("2475/256", "800"),
+            ("2390/256", "640"),
+            ("2304/256", "500"),
+            ("2219/256", "400"),
+            ("2134/256", "320"),
+            ("2048/256", "250"),
+            ("1963/256", "200"),
+            ("1878/256", "160"),
+            ("1792/256", "125"),
+            ("1707/256", "100"),
+            ("1622/256", "80"),
+            ("1536/256", "60"),
+            ("1451/256", "50"),
+            ("1366/256", "40"),
+            ("1280/256", "30"),
+            ("1195/256", "25"),
+            ("1110/256", "20"),
+            ("1024/256", "15"),
+            ("939/256", "13"),
+            ("854/256", "10"),
+            ("768/256", "8"),
+            ("683/256", "6"),
+            ("598/256", "5"),
+            ("512/256", "4"),
+            ("427/256", "3.2"),
+            ("342/256", "2.5"),
+            ("256/256", "2"),
+            ("171/256", "1.6"),
+            ("86/256", "1.3"),
+            ("0/256", "1"),
+            ("65451/256", "1.3s"),
+            ("65366/256", "1.6s"),
+            ("65280/256", "2s"),
+            ("65195/256", "2.5s"),
+            ("65110/256", "3.2s"),
+            ("65024/256", "4s"),
+            ("64939/256", "5s"),
+            ("64854/256", "6s"),
+            ("64768/256", "8s"),
+            ("64683/256", "10s"),
+            ("64598/256", "13s"),
+            ("64512/256", "15s"),
+            ("64427/256", "20s"),
+            ("64342/256", "25s"),
+            ("64256/256", "30s"),
+            ("64171/256", "40s"),
+            ("64086/256", "50s"),
+            ("64000/256", "60s"),
+            ("16384/256", "B"),
+        ):
+            item = xml.etree.ElementTree.SubElement(group, "item")
+            title_id = f"title_shtrspeed_{cmd_value}"
+            item.set("id", f"menu_item_id_shtrspeed_{cmd_value}")
+            item.set("title_id", title_id)
+            item.set("cmd_mode", "setsetting")
+            item.set("cmd_type", "shtrspeed")
+            item.set("cmd_value", cmd_value)
+
+            title = xml.etree.ElementTree.SubElement(language_en, "title")
+            title.set("id", title_id)
+            title.text = text
+
+        # add aperture
+        item = xml.etree.ElementTree.SubElement(menu, "item")
+        item.set("id", "menu_item_id_focal")
+        item.set("title_id", "title_focal")
+        item.set("func_type", "select")
+        group = xml.etree.ElementTree.SubElement(item, "group")
+        for cmd_value, text in (
+            ("171/256", "1.2"),
+            ("256/256", "1.4"),
+            ("342/256", "1.6"),
+            ("392/256", "1.7"),
+            ("427/256", "1.8"),
+            ("512/256", "2"),
+            ("598/256", "2.2"),
+            ("683/256", "2.5"),
+            ("768/256", "2.8"),
+            ("854/256", "3.2"),
+            ("938/256", "3.5"),
+            ("1024/256", "4"),
+            ("1110/256", "4.5"),
+            ("1195/256", "5"),
+            ("1280/256", "5.6"),
+            ("1366/256", "6.3"),
+            ("1451/256", "7.1"),
+            ("1536/256", "8"),
+            ("1622/256", "9"),
+            ("1707/256", "10"),
+            ("1792/256", "11"),
+            ("1878/256", "13"),
+            ("1963/256", "14"),
+            ("2048/256", "16"),
+        ):
+            item = xml.etree.ElementTree.SubElement(group, "item")
+            title_id = f"title_focal_{cmd_value}"
+            item.set("id", f"menu_item_id_focal_{cmd_value}")
+            item.set("title_id", title_id)
+            item.set("cmd_mode", "setsetting")
+            item.set("cmd_type", "focal")
+            item.set("cmd_value", cmd_value)
+
+            title = xml.etree.ElementTree.SubElement(language_en, "title")
+            title.set("id", title_id)
+            title.text = text
 
     @_requires_connected
     def _get_curmenu(self):
@@ -1177,7 +1298,7 @@ class LumixG9IIRemoteControl:
 
         Parameters
         ----------
-        settings: str
+        setting: str
 
         value: Any
 
@@ -1335,7 +1456,7 @@ class LumixG9IIRemoteControl:
     @_requires_connected
     def query_all_items_on_sdcard(
         self, **kwargs
-    ) -> List[Union[didl_lite.DidlObject, didl_lite.Descriptor]]:
+    ) -> List[Union[didl_lite.Item, didl_lite.Container]]:
 
         logger.info("query_all_items_on_sdcard: %s", kwargs)
 

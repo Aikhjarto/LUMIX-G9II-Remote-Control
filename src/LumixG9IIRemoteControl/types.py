@@ -1,4 +1,4 @@
-from typing import Literal, TypedDict, Union
+from typing import Dict, Literal, TypedDict, Union
 
 from didl_lite import didl_lite
 
@@ -19,16 +19,35 @@ CamCGISettingDict = TypedDict(
     },
 )
 
-ResourceDict = TypedDict(
-    "ResourceDict",
+# file format identifiers used in the camera as obtained from capabilities.xml
+CameraFileformatIdentfiers = Literal[
+    "CAM_ORG",
+    "CAM_MPO_JPG",
+    "CAM_MPO",
+    "CAM_RAW_JPG",
+    "CAM_RAW",
+    "CAM_HSP",
+    "CAM_HSP_JPG: str,CAM_HSP_RAW_JPG",
+    "CAM_HSP_RAW",
+    "CAM_FOCUS_SELECT_MP4",
+    "CAM_AVC_MP4_LPCM_ORG: str,CAM_AVC_MP4_XK_ORG",
+    "CAM_AVC_MP4_4K_ORG",
+    "CAM_AVC_MP4_ORG",
+    "CAM_AVC_TS_HP_ORG",
+    "CAM_AVC_MOV_ORG",
+]
+
+MyResource = TypedDict(
+    "MyResource", {"additional_info": Dict[str, str], "res": didl_lite.Resource}
+)
+CameraContentItemResource = Dict[
+    Union[CameraFileformatIdentfiers, Literal["CAM_TN", "CAM_LRGTN"]], MyResource
+]
+
+CameraContentItem = TypedDict(
+    "CameraContentItem",
     {
-        "CAM_RAW_JPG": str,
-        "CAM_RAW": str,
-        "CAM_TN": str,
-        "CAM_LRGTN": str,
-        "CAM_ORG": str,
-        "CAM_AVC_MP4_ORG": str,
-        "OriginalFileName": str,
+        "resources": CameraContentItemResource,
         "didl_object": Union[
             didl_lite.ImageItem, didl_lite.VideoItem, didl_lite.Container
         ],
