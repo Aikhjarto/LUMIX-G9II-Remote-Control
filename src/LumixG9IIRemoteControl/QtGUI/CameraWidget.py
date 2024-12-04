@@ -72,13 +72,13 @@ class CameraWidget(QWidget, NoRaiseMixin):
         connect_button.setCheckable(True)
         self.connect_button = connect_button
 
-        edit = QLineEdit()
-        edit.setPlaceholderText("mlbel")
-        edit.returnPressed.connect(lambda: self.connect_button.setEnabled(True))
-        find_camera_button.clicked.connect(
-            lambda x, val=edit: self._find_camera(x, val)
+        self.camera_hostname = QLineEdit()
+        self.camera_hostname.setPlaceholderText("mlbel")
+        self.camera_hostname.returnPressed.connect(
+            lambda: self.connect_button.setEnabled(True)
         )
-        connect_button.clicked.connect(lambda x, val=edit: self._connect(x, val))
+        find_camera_button.clicked.connect(self._find_camera)
+        connect_button.clicked.connect(self._connect)
 
         self.play_rec_mode_button = QPushButton("Play/Rec")
         self.play_rec_mode_button.setEnabled(False)
@@ -87,7 +87,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
         lv = QVBoxLayout()
         lh = QHBoxLayout()
         lh.addWidget(QLabel("Camera:"))
-        lh.addWidget(edit)
+        lh.addWidget(self.camera_hostname)
         lv.addLayout(lh)
 
         lh = QHBoxLayout()
@@ -134,14 +134,14 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         return no_raise
 
-    def _connect(self, value: bool, line_edit: QLineEdit):
+    def _connect(self):
 
-        if line_edit.isModified():
-            host_name = line_edit.text()
+        if self.camera_hostname.isModified():
+            host_name = self.camera_hostname.text()
         else:
-            host_name = line_edit.placeholderText()
+            host_name = self.camera_hostname.placeholderText()
 
-        if value:
+        if self.connect_button.isChecked():
             try:
                 self.g9ii.connect(host=host_name)
             except Exception as e:
@@ -164,7 +164,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
             self.cameraConnectionStateChanged.emit("disconnected")
             # self.play_rec_mode_button.setEnabled(False)
 
-    def _find_camera(self, status: bool, line_edit: QLineEdit):
+    def _find_camera(self):
         QApplication.sendEvent(
             self, QtGui.QStatusTipEvent(f"Searching for Camera on the network")
         )
@@ -172,16 +172,16 @@ class CameraWidget(QWidget, NoRaiseMixin):
             camera_hostname = find_lumix_camera_via_sspd()
         except RuntimeError as e:
             traceback.print_exception(e)
-            line_edit.setPlaceholderText("no camera found")
-            line_edit.setText(None)
+            self.camera_hostname.setPlaceholderText("no camera found")
+            self.camera_hostname.setText(None)
             self.error_message.critical(
                 self,
                 "G9II Error",
                 "\n".join(traceback.format_exception_only(e)),
             )
         else:
-            line_edit.setText(camera_hostname)
-            line_edit.setModified(True)
+            self.camera_hostname.setText(camera_hostname)
+            self.camera_hostname.setModified(True)
             self.connect_button.setEnabled(True)
 
     @Slot(dict)
@@ -281,6 +281,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
             item_list.extend(didl_object_list)
         return item_list
 
+    @_no_raise
     def query_all_items(self, d):
         logger.info("query_all_items: %s", d)
 

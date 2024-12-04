@@ -63,7 +63,7 @@ def prepare_cds_query(
     StartingIndex=0,
     RequestedCount=15,
     age_in_days: int = None,
-    rating_list: Tuple[int] = (0,),
+    rating_list: Tuple[int] = None,
     object_id_str="0",
     recgroup_type_string=None,
 ):
@@ -94,8 +94,9 @@ def prepare_cds_query(
     filter_list = []
     if age_in_days:
         filter_list.append(f"type=date,value=relative,value2={age_in_days:d}")
-    rating_string = "/".join(map(str, rating_list))
-    filter_list.append(f"type=rating,value={rating_string}")
+    if rating_list:
+        rating_string = "/".join(map(str, rating_list))
+        filter_list.append(f"type=rating,value={rating_string}")
     filter_string = ";".join(filter_list)
 
     envelop = xml.etree.ElementTree.Element(
@@ -129,11 +130,11 @@ def prepare_cds_query(
         xml.etree.ElementTree.SubElement(browse, "pana:X_RecGroupType").text = (
             recgroup_type_string
         )
-    if filter_string is not None:
+    if filter_string:
         xml.etree.ElementTree.SubElement(browse, "pana:X_Filter").text = filter_string
-    xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = (
-        "type=date,value=ascend"
-    )
+        xml.etree.ElementTree.SubElement(browse, "pana:X_Order").text = (
+            "type=date,value=ascend"
+        )
 
     xml.etree.ElementTree.indent(envelop, space=" ")
     xml_string = xml.etree.ElementTree.tostring(
@@ -148,6 +149,7 @@ def prepare_cds_query(
         "SOAPACTION": '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"',
     }
 
+    logger.info("%s", xml_string.decode())
     return url, xml_string, headers
 
 
@@ -166,7 +168,6 @@ def decode_cds_query_response(text: str):
         didl_object_list,
         TotalMatches,
         NumberReturned,
-        text.find("container"),
     )
 
 
@@ -259,9 +260,17 @@ class LumixG9IIRemoteControl:
         host=None,
         auto_connect=False,
         min_drag_continue_interval=0.2,
+        store_queries=False,
     ):
         self._auto_connect = auto_connect
         self.host = host
+
+        self.store_queries = store_queries
+        self._xml_tostring_kwargs = {
+                        "xml_declaration": True,
+                        "encoding": "utf-8",
+                        "short_empty_elements": False,
+                        }
 
         # Drag continue events can come from GUI more rapidly than Wi-Fi transport to
         # camera permits. Thus set a minimum interval and discard intermediate
@@ -278,6 +287,7 @@ class LumixG9IIRemoteControl:
         self._curmenu_tree: xml.etree.ElementTree.ElementTree = None
         self._external_teleconverter_tree: xml.etree.ElementTree.ElementTree = None
         self._touch_type_tree: xml.etree.ElementTree.ElementTree = None
+        self._ddd_tree: xml.etree.ElementTree.ElementTree = None
 
         # static camera parameters
         self.device_info_dict: Dict[str, str] = {}
@@ -533,10 +543,20 @@ class LumixG9IIRemoteControl:
     def _get_device_info_via_ddd(self):
         ret = requests.get(f"http://{self._host}:60606/Lumix/Server0/ddd")
         assert ret.ok
-        et = defusedxml.ElementTree.fromstring(ret.text)
+        self._ddd_tree = defusedxml.ElementTree.fromstring(ret.text)
+        if self.store_queries:
+            with open("ddd.xml", "wb") as f:
+                xml.etree.ElementTree.indent(self._ddd_tree)
+                f.write(
+                    xml.etree.ElementTree.tostring(
+                        self._ddd_tree,
+                        **self._xml_tostring_kwargs
+                    )
+                )
+
         self.device_info_dict = {}
 
-        for i in et.findall("{urn:schemas-upnp-org:device-1-0}device/*"):
+        for i in self._ddd_tree.findall("{urn:schemas-upnp-org:device-1-0}device/*"):
             key = i.tag[i.tag.find("}") + 1 :]
             self.device_info_dict[key] = i.text
 
@@ -567,6 +587,15 @@ class LumixG9IIRemoteControl:
         )
         self._capability_tree = self._check_ret_ok(ret)
 
+        if self.store_queries:
+            with open("capabilties.xml", "wb") as f:
+                xml.etree.ElementTree.indent(self._capability_tree)
+                f.write(
+                    xml.etree.ElementTree.tostring(
+                        self._capability_tree,**self._xml_tostring_kwargs
+                    )
+                )
+
     @_requires_connected
     def _get_allmenu(self):
         ret = requests.get(
@@ -575,13 +604,24 @@ class LumixG9IIRemoteControl:
             params={"mode": "getinfo", "type": "allmenu"},
         )
         self._allmenu_tree = self._check_ret_ok(ret)
-        # with open('allmenu.xml', 'wb') as f:
-        #     f.write(xml.etree.ElementTree.tostring(self._allmenu_tree),
-        #             xml_declaration=True,
-        #             encoding="utf-8",
-        #             short_empty_elements=False)
+        if self.store_queries:
+            with open("allmenu.xml", "wb") as f:
+                xml.etree.ElementTree.indent(self._allmenu_tree)
+                f.write(
+                    xml.etree.ElementTree.tostring(
+                        self._allmenu_tree,**self._xml_tostring_kwargs
+                    )
+                )
 
         self._add_extra_menu()
+        if self.store_queries:
+            with open("allmenu_with_extra.xml", "wb") as f:
+                xml.etree.ElementTree.indent(self._allmenu_tree)
+                f.write(
+                    xml.etree.ElementTree.tostring(
+                        self._allmenu_tree,**self._xml_tostring_kwargs
+                    )
+                )
 
         self.set_local_language()
         self._publish_state_change("allmenu_etree", self._allmenu_tree)
@@ -768,6 +808,15 @@ class LumixG9IIRemoteControl:
                         {self.camera_state_dict[key]},
                         key,
                     )
+
+        if self.store_queries:
+            with open("curmenu.xml", "wb") as f:
+                xml.etree.ElementTree.indent(self._curmenu_tree)
+                f.write(
+                    xml.etree.ElementTree.tostring(
+                        self._curmenu_tree,**self._xml_tostring_kwargs
+                    )
+                )
 
         self._publish_state_change("curmenu_etree", self._curmenu_tree)
 
@@ -962,6 +1011,15 @@ class LumixG9IIRemoteControl:
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "playmode"},
+        )
+        self._check_ret_ok(ret)
+
+    @_requires_connected
+    def poweroff(self):
+        ret = requests.get(
+            self._cam_cgi,
+            headers=self._headers,
+            params={"mode": "camcmd", "value": "poweroff"},
         )
         self._check_ret_ok(ret)
 
@@ -1396,11 +1454,15 @@ class LumixG9IIRemoteControl:
             self._event_thread.start()
 
     @_requires_connected
-    def raw_img_send_enable(self):
+    def raw_img_send_enable(self, status: bool):
+        if status:
+            value = "enable"
+        else:
+            value = "disable"
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
-            params={"mode": "setsetting", "type": "raw_img_send", "value": "enable"},
+            params={"mode": "setsetting", "type": "raw_img_send", "value": value},
         )
         self._check_ret_ok(ret)
 
@@ -1433,7 +1495,7 @@ class LumixG9IIRemoteControl:
 
         busy is sent, when one of the camera is operated manually while a remote connection is still alive. When the manual operation stops, `update` and `lens_Atta` events are sent.
         """
-        print(data)
+        logger.info("Got event notification from camera %s", data)
         self._publish_state_change("camera_event", data)
         self._get_curmenu()
         self.get_settings()
@@ -1460,31 +1522,64 @@ class LumixG9IIRemoteControl:
 
         logger.info("query_all_items_on_sdcard: %s", kwargs)
 
-        self.raw_img_send_enable()
-        # content_info_dict = self.get_content_info()
-        # {"current_position": 126, "total_content_number": 388, "content_number": 127}
+        # set extra play-mode, raw_img_send and use get_content_info() is done
+        # by Lumix Sync App. If not done, Containers are reported wrong, i.e. one
+        # container-item per image instead one container with several images.
+        self.set_playmode()
+        self.raw_img_send_enable(True)
+        content_info_dict = self.get_content_info()
+        logger.info('content info: %s', content_info_dict)
+        #logger.info('play_sort_mode: %s', self.get_setting('play_sort_mode')) 
+        
+
         n_bulk = 15
-        # logger.info("%s", content_info_dict)
-        # n_iterations = math.ceil(content_info_dict["total_content_number"] / n_bulk)
         TotalMatches = float("inf")
         TotalNumberReturned = 0
         item_list = []
         i = 0
         while TotalNumberReturned < TotalMatches:
-            logger.info("Item query %d/%s", TotalNumberReturned, TotalMatches)
+            logger.info("Item query %d/%s with filter %s", TotalNumberReturned, TotalMatches, kwargs)
             (
                 soap_xml,
                 didl_lite_xml,
                 didl_object_list,
                 TotalMatches,
                 NumberReturned,
-                container_id,
             ) = self.query_items_on_sdcard(
                 StartingIndex=i * n_bulk, RequestedCount=n_bulk, **kwargs
             )
+            if self.store_queries:
+                xml.etree.ElementTree.indent(soap_xml)
+                key = f"{kwargs.get('object_id_str')}_{i}"
+                with open(f"soap_{key}.xml", "wb") as f:
+                    f.write(
+                        xml.etree.ElementTree.tostring(
+                            soap_xml,**self._xml_tostring_kwargs
+                        )
+                    )
+                    
+                xml.etree.ElementTree.indent(didl_lite_xml)
+                with open(f"didl_{key}.xml", "wb") as f:
+                    f.write(
+                        xml.etree.ElementTree.tostring(
+                            didl_lite_xml,**self._xml_tostring_kwargs
+                        )
+                    )
+
             i = i + 1
             TotalNumberReturned = TotalNumberReturned + NumberReturned
             item_list.extend(didl_object_list)
+
+        # if kwargs.get('age_in_days') is None and kwargs.get("rating_list") is None:
+        #     # TODO: When using filtering, camera reports bogus directories
+        #     # Each image in a Burst is reported then as a directory and the directories
+        #     # content the whole sd-card content.
+        #     for didl_object in didl_object_list:
+        #         if isinstance(didl_object, didl_lite.Container):
+        #             ret = self.query_all_items_on_sdcard(object_id_str = didl_object.id, **kwargs)
+        #             item_list.extend(ret)
+
+
         return item_list
 
     @_requires_connected
@@ -1501,35 +1596,70 @@ class LumixG9IIRemoteControl:
             if state["cammode"] != "play":
                 self.set_playmode()
         url, xml_string, headers = prepare_cds_query(self._host, **kwargs)
+
+        if self.store_queries:
+            with open("cds_query.xml", "wb") as f:
+                f.write(xml_string)
+
         ret = requests.post(url=url, headers=headers, data=xml_string)
 
         if ret.ok:
             return decode_cds_query_response(ret.text)
         else:
-            logger.error(
+            # TODO when camera started in play mode, this error occurs until switching to recmode and back to play mode
+            raise RuntimeError(
                 "Request %s\n resulted in %s \n with answer %s\n"
-                "Ensure you are in play mode and your filters are correct.",
-                pprint.pformat(xml_string.decode()),
-                pprint.pformat(ret),
-                pprint.pformat(ret.text),
+                "Ensure you are in play mode and your filters are correct."
+                % (
+                    pprint.pformat(xml_string.decode()),
+                    pprint.pformat(ret),
+                    pprint.pformat(ret.text),
+                )
             )
+            # logger.error(
+            #     "Request %s\n resulted in %s \n with answer %s\n"
+            #     "Ensure you are in play mode and your filters are correct.",
+            #     pprint.pformat(xml_string.decode()),
+            #     pprint.pformat(ret),
+            #     pprint.pformat(ret.text),
+            # )
 
     @_requires_connected
-    def get_content_item(self, string, to_file: bool = False) -> bytes:
+    def get_content_item(self, string, to_file: bool = False) -> Tuple[Dict[str,str], bytes]:
         # string is like DL01112176.JPG
         # DT01112176.JPG
         ret = requests.get(f"http://{self.host}/{string}", headers=self._headers)
         assert ret.ok
+
+        # TODO: Header looks like this
+        # HTTP/1.1 200 OK'
+        # Date: Mon, 24 Nov 19355 14:21:04 GMT
+        # Server: Panasonic
+        # Cache-Control: no-cache
+        # Pragma: no-cache
+        # Transfer-Encoding: chunked
+        # Content-Type: image/jpeg
+        # Accept-Ranges: bytes
+        # transferMode.dlna.org:Interactive
+        # X-REC_DATE_TIME: 2024-12-01T13:32:15
+        # X-ROTATE_INFO: 1
+        # X-FILE_SIZE: 5107
+        # Connection: Keep-Alive'
+
         if to_file:
             with open(string, "b") as f:
                 f.write(ret.raw)
-        return ret.raw
+        return ret.headers, ret.raw
+
+
+def add_general_options_to_parser(parser: argparse.ArgumentParser):
+    parser.add_argument("--hostname", type=str, help="Hostname or IP-Adress of camera")
+    parser.add_argument("--auto-connect", action="store_true")
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", "-H", type=str, required=False)
-    parser.add_argument("--auto-connect", action="store_true", default=False),
+    add_general_options_to_parser(parser)
     parser.add_argument("--use-full-IPython", action="store_true", default=False)
     return parser
 
@@ -1554,7 +1684,7 @@ if __name__ == "__main__":
         c = Config()
         c.InteractiveShellApp.exec_lines = [
             "import LumixG9IIRemoteControl.LumixG9IIRemoteControl",
-            f"g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host={args.host})",
+            f"g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host={args.hostname})",
         ]
         c.InteractiveShellApp.hide_initial_ns = False
 
@@ -1564,10 +1694,12 @@ if __name__ == "__main__":
     else:
         import IPython
 
-        g9ii = LumixG9IIRemoteControl(auto_connect=args.auto_connect, host=args.host)
+        g9ii = LumixG9IIRemoteControl(
+            auto_connect=args.auto_connect, host=args.hostname
+        )
         IPython.embed(header=header)
     # try:
-    #     g9ii.connect(host=args.host)
+    #     g9ii.connect(host=args.hostname)
     # except RuntimeError as e:
     #     traceback.print_exception(e)
 

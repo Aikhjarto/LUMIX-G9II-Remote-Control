@@ -32,7 +32,7 @@ pip install LumixG9IIRemoteControl
 
 ### Setup
 * On the laptop execute the following commands (change the IP-adress of your router and the MAC address of your camera accordingly):
-```
+```bash
 mkfifo /tmp/camtest
 sudo wireshark -k -i /tmp/camtest
 ssh root@192.168.0.1 "tcpdump -i br-lan ether host a0:cd:f3:e7:7e:48 -U -s0 -w -" > /tmp/camtest

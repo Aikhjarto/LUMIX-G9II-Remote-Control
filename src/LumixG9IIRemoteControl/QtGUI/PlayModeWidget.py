@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QAction,
     QApplication,
     QButtonGroup,
+    QGroupBox,
     QCheckBox,
     QComboBox,
     QErrorMessage,
@@ -75,6 +76,21 @@ class PlayModeWidget(QWidget):
             "0 means no restriction, 1 means today, 2 means today and yesterday,..."
         )
 
+        filters_layout=QHBoxLayout()
+        filters_layout.addWidget(self.q0_checkbox)
+        filters_layout.addWidget(self.q1_checkbox)
+        filters_layout.addWidget(self.q2_checkbox)
+        filters_layout.addWidget(self.q3_checkbox)
+        filters_layout.addWidget(self.q4_checkbox)
+        filters_layout.addWidget(self.q5_checkbox)
+        filters_layout.addWidget(self.age_in_days_lineedit)
+        
+        self.filter_groupbox = QGroupBox("Image Query Filter")
+        self.filter_groupbox.setCheckable(True)
+        self.filter_groupbox.setChecked(False)
+        self.filter_groupbox.setLayout(filters_layout)
+
+
         self.sd_card_select = QComboBox()
         self.sd_card_select.addItem("SD1")
         self.sd_card_select.addItem("SD2")
@@ -91,13 +107,7 @@ class PlayModeWidget(QWidget):
 
         controls_layout = QHBoxLayout()
         controls_layout.addWidget(self.update_image_list_button)
-        controls_layout.addWidget(self.q0_checkbox)
-        controls_layout.addWidget(self.q1_checkbox)
-        controls_layout.addWidget(self.q2_checkbox)
-        controls_layout.addWidget(self.q3_checkbox)
-        controls_layout.addWidget(self.q4_checkbox)
-        controls_layout.addWidget(self.q5_checkbox)
-        controls_layout.addWidget(self.age_in_days_lineedit)
+        controls_layout.addWidget(self.filter_groupbox)
         controls_layout.addWidget(self.sd_card_select)
 
         controls_layout.addWidget(self.folder_select_button)
@@ -129,27 +139,28 @@ class PlayModeWidget(QWidget):
             req.abort()
 
         filter_dict = {}
+        if self.filter_groupbox.isChecked():
 
-        if self.age_in_days_lineedit.text():
-            age_in_days = int(self.age_in_days_lineedit.text())
-            filter_dict["age_in_days"] = age_in_days
+            if self.age_in_days_lineedit.text():
+                age_in_days = int(self.age_in_days_lineedit.text())
+                filter_dict["age_in_days"] = age_in_days
 
-        rating_list = []
-        if self.q0_checkbox.isChecked():
-            rating_list.append(0)
-        if self.q1_checkbox.isChecked():
-            rating_list.append(1)
-        if self.q2_checkbox.isChecked():
-            rating_list.append(2)
-        if self.q3_checkbox.isChecked():
-            rating_list.append(3)
-        if self.q4_checkbox.isChecked():
-            rating_list.append(4)
-        if self.q5_checkbox.isChecked():
-            rating_list.append(5)
+            rating_list = []
+            if self.q0_checkbox.isChecked():
+                rating_list.append(0)
+            if self.q1_checkbox.isChecked():
+                rating_list.append(1)
+            if self.q2_checkbox.isChecked():
+                rating_list.append(2)
+            if self.q3_checkbox.isChecked():
+                rating_list.append(3)
+            if self.q4_checkbox.isChecked():
+                rating_list.append(4)
+            if self.q5_checkbox.isChecked():
+                rating_list.append(5)
 
-        if rating_list:
-            filter_dict["rating_list"] = rating_list
+            if rating_list:
+                filter_dict["rating_list"] = rating_list
 
         QApplication.sendEvent(
             self,
@@ -159,6 +170,9 @@ class PlayModeWidget(QWidget):
         )
         self.imageListRequest.emit(filter_dict)
 
+
+# class CameraContainerTableWidget(QTableWidget):
+# 
 
 class PlayModeTableWidget(QTableWidget):
     def __init__(self, *args, **kwargs):
@@ -191,6 +205,8 @@ class PlayModeTableWidget(QTableWidget):
 
         self._local_folder: str = "."
 
+        self.itemDoubleClicked.connect(self.itemDoubleClickedHandler)
+
     def clear_cache(self):
         self._thumbnail_cache = {}
 
@@ -203,6 +219,25 @@ class PlayModeTableWidget(QTableWidget):
         action = menu.addAction("Download Large Thumbnail")
         action.triggered.connect(self.download_large_thumbnail_for_selection)
         menu.popup(self.viewport().mapToGlobal(pos))
+
+    # def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
+    #     event.accept()
+    #     index = self.indexAt(event.pos())
+    #     logger.info("Double click at index %s, row %s, column %s, with item",
+    #                 index, index.row(), index.column())
+    #     camera_content_item = self._camera_content_cache[index.row()]
+    #     if isinstance(camera_content_item["didl_object"], didl_lite.Container):
+    #         containerview = QTableWidget()
+
+    # TODO double click on container item should bring up a new table with container's content.
+    # There are two signals:
+    def itemDoubleClickedHandler(self, item: QTableWidgetItem):
+        logger.info("Clicked at item %s in row %s", item, item.row())
+
+    def open_container(self, item: CameraContentItem) -> QTableWidgetItem:
+        pass
+    # def cellDoubleClicked(int row, int column):
+        
 
     @property
     def local_folder(self):
@@ -292,7 +327,8 @@ class PlayModeTableWidget(QTableWidget):
 
         self._camera_content_cache = {}
         self.clear()
-        self.setColumnCount(4)
+        self.setColumnCount(5)
+        self.setHorizontalHeaderLabels(["Thumbnail", "Sync", "Type", "Debuginfo"])
         self.setRowCount(len(camera_content_list))
 
         for row, camera_content_item in enumerate(camera_content_list):
@@ -340,9 +376,18 @@ class PlayModeTableWidget(QTableWidget):
             self.setItem(row, 2, description_item)
             self.resizeColumnToContents(2)
 
+            try:
+                date = camera_content_item["didl_object"].date
+            except AttributeError:
+                pass
+            else:
+                date_item = QTableWidgetItem(date)
+                self.setItem(row, 3, date_item)
+                self.resizeColumnToContents(3)
+
             description_item = QTableWidgetItem()
             description_item.setText(f"Resource {camera_content_item}")
-            self.setItem(row, 3, description_item)
+            self.setItem(row, 4, description_item)
 
     def send_request(
         self, url: str, priority: QNetworkRequest.Priority.HighPriority = None

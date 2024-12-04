@@ -49,7 +49,7 @@ CameraContentItem = TypedDict(
     {
         "resources": CameraContentItemResource,
         "didl_object": Union[
-            didl_lite.ImageItem, didl_lite.VideoItem, didl_lite.Container
+            didl_lite.ImageItem, didl_lite.Movie, didl_lite.Container
         ],
         "index": int,
     },

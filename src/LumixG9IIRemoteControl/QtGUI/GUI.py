@@ -1,11 +1,10 @@
+import argparse
 import logging
 import pprint
 import signal
 import sys
 import traceback
-from typing import Dict
 
-import qtconsole
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Qt, QTimer, Signal, Slot
 from qtpy.QtWidgets import (
@@ -29,6 +28,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ..LumixG9IIRemoteControl import add_general_options_to_parser
 from .CameraWidget import CameraWidget
 from .console import EmbedIPythonWidget
 from .PlayModeWidget import PlayModeWidget
@@ -50,12 +50,15 @@ class MainWindow(QMainWindow):
         self.error_message = QMessageBox()
 
         self.play_mode_widget = PlayModeWidget()
-        self.play_mode_widget.show()
+        self.play_mode_widget.setVisible(False)
 
         self.status_widget = QLabel(text="Camera not connected")
+
         self.camera_widget = CameraWidget()
 
         self.rec_mode_widget = RecModeWidget(self.camera_widget.g9ii)
+        self.rec_mode_widget.setVisible(False)
+
         self.rec_mode_widget.cameraCommandRequest.connect(
             self.camera_widget.execute_camera_command
         )
@@ -97,9 +100,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.camera_widget)
 
-        button = QPushButton("Quit")
-        button.clicked.connect(self._quit)
-        layout.addWidget(button)
+        quit_button = QPushButton("Quit")
+        quit_button.clicked.connect(self._quit)
+        layout.addWidget(quit_button)
 
         scroll = QScrollArea()
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -118,9 +121,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(control_widget)
         layout.addWidget(self.rec_mode_widget)
         layout.addWidget(self.play_mode_widget)
-
-        self.rec_mode_widget.setVisible(False)
-        self.play_mode_widget.setVisible(False)
 
         central_widget = QWidget()
         central_widget.setLayout(layout)
@@ -155,6 +155,19 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
 
+def parse_command_line_arguments() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser()
+
+    add_general_options_to_parser(parser)
+
+    parser.add_argument("--developer-mode", action="store_true")
+
+    args = parser.parse_args()
+
+    return args
+
+
 def main():
 
     # noinspection PyUnusedLocal
@@ -171,11 +184,23 @@ def main():
         "LumixG9IIRemoteControl.QtGUI.GUI", type(mw).__name__, "mw"
     )
 
+    # Let the interpreter run periodically to capture SIGINT/CTRL+C when GUI is in background
     timer = QTimer()
     timer.start(200)
-    timer.timeout.connect(lambda: None)  # Let the interpreter run periodically
+    timer.timeout.connect(lambda: None)
 
-    qtconsole.show()
+    args = parse_command_line_arguments()
+
+    if args.hostname:
+        mw.camera_widget.camera_hostname.setText(args.hostname)
+
+    if args.developer_mode:
+        qtconsole.show()
+        mw.camera_widget.g9ii.store_queries = True
+
+    if args.auto_connect:
+        mw.camera_widget.connect_button.click()
+
     mw.show()
 
     app.exec()
