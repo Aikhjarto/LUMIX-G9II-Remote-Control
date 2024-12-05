@@ -13,10 +13,10 @@ clean:
 	@rm -rf src/*.egg-info/ build/ dist/ .tox/ ./doc/_build/
 
 format:
-	isort .
-	black .
+	isort src
+	black src
 	blacken-docs README.md
 
 lint:
-	black --check .
-	flake8 src
+	black --check src
+	pflake8 src

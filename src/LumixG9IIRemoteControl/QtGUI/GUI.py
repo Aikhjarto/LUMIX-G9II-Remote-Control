@@ -64,14 +64,14 @@ class MainWindow(QMainWindow):
         )
 
         self.camera_widget.cameraNewItemsList.connect(
-            self.play_mode_widget.play_mode_table_widget.new_camera_content_list
+            self.play_mode_widget.update_camera_content_list
         )
 
         self.play_mode_widget.imageListRequest.connect(
             self.camera_widget.query_all_items
         )
         self.camera_widget.cameraConnected.connect(
-            self.play_mode_widget.play_mode_table_widget.update_connection_state
+            self.play_mode_widget.update_connection_state
         )
 
         self.camera_widget.cameraStateChanged.connect(

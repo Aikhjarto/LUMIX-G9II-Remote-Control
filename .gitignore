@@ -3,6 +3,10 @@ Dumps
 .vscode
 .idea
 *.xml
+*.JPG
+*.RAW
+*.MP4
+*.MOV
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

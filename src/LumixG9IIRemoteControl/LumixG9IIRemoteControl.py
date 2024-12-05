@@ -267,10 +267,10 @@ class LumixG9IIRemoteControl:
 
         self.store_queries = store_queries
         self._xml_tostring_kwargs = {
-                        "xml_declaration": True,
-                        "encoding": "utf-8",
-                        "short_empty_elements": False,
-                        }
+            "xml_declaration": True,
+            "encoding": "utf-8",
+            "short_empty_elements": False,
+        }
 
         # Drag continue events can come from GUI more rapidly than Wi-Fi transport to
         # camera permits. Thus set a minimum interval and discard intermediate
@@ -549,8 +549,7 @@ class LumixG9IIRemoteControl:
                 xml.etree.ElementTree.indent(self._ddd_tree)
                 f.write(
                     xml.etree.ElementTree.tostring(
-                        self._ddd_tree,
-                        **self._xml_tostring_kwargs
+                        self._ddd_tree, **self._xml_tostring_kwargs
                     )
                 )
 
@@ -592,7 +591,7 @@ class LumixG9IIRemoteControl:
                 xml.etree.ElementTree.indent(self._capability_tree)
                 f.write(
                     xml.etree.ElementTree.tostring(
-                        self._capability_tree,**self._xml_tostring_kwargs
+                        self._capability_tree, **self._xml_tostring_kwargs
                     )
                 )
 
@@ -609,7 +608,7 @@ class LumixG9IIRemoteControl:
                 xml.etree.ElementTree.indent(self._allmenu_tree)
                 f.write(
                     xml.etree.ElementTree.tostring(
-                        self._allmenu_tree,**self._xml_tostring_kwargs
+                        self._allmenu_tree, **self._xml_tostring_kwargs
                     )
                 )
 
@@ -619,7 +618,7 @@ class LumixG9IIRemoteControl:
                 xml.etree.ElementTree.indent(self._allmenu_tree)
                 f.write(
                     xml.etree.ElementTree.tostring(
-                        self._allmenu_tree,**self._xml_tostring_kwargs
+                        self._allmenu_tree, **self._xml_tostring_kwargs
                     )
                 )
 
@@ -814,7 +813,7 @@ class LumixG9IIRemoteControl:
                 xml.etree.ElementTree.indent(self._curmenu_tree)
                 f.write(
                     xml.etree.ElementTree.tostring(
-                        self._curmenu_tree,**self._xml_tostring_kwargs
+                        self._curmenu_tree, **self._xml_tostring_kwargs
                     )
                 )
 
@@ -1528,9 +1527,8 @@ class LumixG9IIRemoteControl:
         self.set_playmode()
         self.raw_img_send_enable(True)
         content_info_dict = self.get_content_info()
-        logger.info('content info: %s', content_info_dict)
-        #logger.info('play_sort_mode: %s', self.get_setting('play_sort_mode')) 
-        
+        logger.info("content info: %s", content_info_dict)
+        # logger.info('play_sort_mode: %s', self.get_setting('play_sort_mode'))
 
         n_bulk = 15
         TotalMatches = float("inf")
@@ -1538,7 +1536,12 @@ class LumixG9IIRemoteControl:
         item_list = []
         i = 0
         while TotalNumberReturned < TotalMatches:
-            logger.info("Item query %d/%s with filter %s", TotalNumberReturned, TotalMatches, kwargs)
+            logger.info(
+                "Item query %d/%s with filter %s",
+                TotalNumberReturned,
+                TotalMatches,
+                kwargs,
+            )
             (
                 soap_xml,
                 didl_lite_xml,
@@ -1554,15 +1557,15 @@ class LumixG9IIRemoteControl:
                 with open(f"soap_{key}.xml", "wb") as f:
                     f.write(
                         xml.etree.ElementTree.tostring(
-                            soap_xml,**self._xml_tostring_kwargs
+                            soap_xml, **self._xml_tostring_kwargs
                         )
                     )
-                    
+
                 xml.etree.ElementTree.indent(didl_lite_xml)
                 with open(f"didl_{key}.xml", "wb") as f:
                     f.write(
                         xml.etree.ElementTree.tostring(
-                            didl_lite_xml,**self._xml_tostring_kwargs
+                            didl_lite_xml, **self._xml_tostring_kwargs
                         )
                     )
 
@@ -1578,7 +1581,6 @@ class LumixG9IIRemoteControl:
         #         if isinstance(didl_object, didl_lite.Container):
         #             ret = self.query_all_items_on_sdcard(object_id_str = didl_object.id, **kwargs)
         #             item_list.extend(ret)
-
 
         return item_list
 
@@ -1625,7 +1627,9 @@ class LumixG9IIRemoteControl:
             # )
 
     @_requires_connected
-    def get_content_item(self, string, to_file: bool = False) -> Tuple[Dict[str,str], bytes]:
+    def get_content_item(
+        self, string, to_file: bool = False
+    ) -> Tuple[Dict[str, str], bytes]:
         # string is like DL01112176.JPG
         # DT01112176.JPG
         ret = requests.get(f"http://{self.host}/{string}", headers=self._headers)
