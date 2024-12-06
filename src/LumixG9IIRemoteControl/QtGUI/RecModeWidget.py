@@ -154,6 +154,7 @@ class RecModeWidget(QWidget):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
+                logger.error(traceback.format_exception(e))
                 args[0].error_message.critical(
                     args[0],
                     "Error",

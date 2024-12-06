@@ -7,6 +7,8 @@ from typing import Dict, List, Literal, Tuple, Union
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Qt, Signal, Slot
 from qtpy.QtWidgets import (
+    QAbstractSlider,
+    QAbstractSpinBox,
     QBoxLayout,
     QButtonGroup,
     QCheckBox,
@@ -21,6 +23,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -54,11 +58,15 @@ class RecordSettingsWidget(QTabWidget):
                 QButtonGroup,
                 QPushButton,
                 QLineEdit,
+                QCheckBox,
+                QSpinBox,
                 Tuple[QComboBox, int],
                 Tuple[QRadioButton, int],
             ],
         ] = {}
-        self._setsetting_map: Dict[str, Union[QComboBox, QLineEdit]] = {}
+        self._setsetting_map: Dict[
+            str, Union[QComboBox, QLineEdit, QAbstractSlider, QCheckBox]
+        ] = {}
         super().__init__(*args, **kwargs)
 
     def _no_raise(func):
@@ -71,11 +79,22 @@ class RecordSettingsWidget(QTabWidget):
         return no_raise
 
     @Slot(xml.etree.ElementTree.ElementTree)
-    def apply_curmenu_xml(self, curmenu_tree: xml.etree.ElementTree.ElementTree):
-
-        return
+    def apply_curmenu_xml(self, curmenu_tree: xml.etree.ElementTree.ElementTree, adhere_enabeled=False):
+        # TODO: setting curmenu triggeres change signals
+        # each change signal triggers setsetting command, which triggers curmenu.
+        # Thus it requires a long time to settle
         for item in curmenu_tree.findall(".//item"):
-            # TODO implement missing
+
+            if item.attrib["id"].startswith("menu_item_id_recmode"):
+                # 'enabled' indicated which mode is currently set and not
+                # which mode is currently available
+                continue
+
+            if item.attrib.get("cmd_type") == "drivemode":
+                # drive mode seems to be never enabled via curmenu
+                # thus also never disable it
+                continue
+
             instance = self._id_map.get(item.attrib["id"])
             if not instance:
                 logger.debug(
@@ -90,9 +109,18 @@ class RecordSettingsWidget(QTabWidget):
             elif item.attrib["enable"] == "no":
                 enabled = False
             else:
-                raise RuntimeError()
+                logger.error(
+                    f"Field enabled of {item.attrib} must either be 'yes' or 'no'."
+                )
+                continue
 
             if isinstance(instance, tuple):
+                if hasattr(instance[0], "setEnabled"):
+                    if adhere_enabeled:
+                        instance[0].blockSignals(True)
+                        instance[0].setEnabled(enabled)
+                        instance[0].blockSignals(False)
+
                 if isinstance(instance[0], QComboBox):
                     combo_box = instance[0]
                     idx = instance[1]
@@ -117,37 +145,77 @@ class RecordSettingsWidget(QTabWidget):
                         )
 
                 else:
-                    raise NotImplementedError
+                    raise NotImplementedError((instance, item.attrib))
 
-            elif hasattr(instance, "setEnabled"):
-                instance.setEnabled(enabled)
             else:
-                raise NotImplementedError((instance, item.attrib))
+                if hasattr(instance, "setEnabled"):
+                    if adhere_enabeled:
+                        instance.blockSignals(True)
+                        instance.setEnabled(enabled)
+                        instance.blockSignals(False)
 
-            if "value" in item.attrib:
-                if isinstance(instance, tuple):
-                    combo_box: QComboBox = instance[0]
-                    idx = combo_box.findText(item.attrib["value"])
-                    if idx == -1:
-                        tmp = [combo_box.itemText(i) for i in range(combo_box.count())]
-                        logger.error(
-                            "Could not find value %s in %s, but %s ",
-                            item.attrib["value"],
-                            item.attrib["id"],
-                            tmp,
-                        )
+                value = item.attrib.get("value")
+                if value:
+                    if isinstance(instance, QAbstractSlider):
+                        instance.blockSignals(True)
+                        instance.setValue(int(value))
+                        instance.blockSignals(False)
+                    elif isinstance(instance, QLineEdit):
+                        instance.blockSignals(True)
+                        instance.setText(value)
+                        instance.blockSignals(False)
+
+                    elif isinstance(instance, QCheckBox):
+                        if item.attrib['id'] == "menu_item_id_interval_expo_leveling":
+                            continue
+                        checked = None
+                        if value == "on":
+                            checked = True
+                        elif value == "off":
+                            checked = False
+
+                        if checked is None:
+                            logger.error(
+                                "Unknown value %s for checkbox for item %s",
+                                value,
+                                item.attrib,
+                            )
+                        else:
+                            instance.blockSignals(True)
+                            instance.setChecked(checked)
+                            instance.blockSignals(False)
+
+                    elif isinstance(instance, QComboBox):
+                        user_data = item.attrib["value"]
+                        if "value2" in item.attrib:
+                            user_data = user_data + "," + item.attrib["value2"]
+                        idx = instance.findData(user_data)
+                        if idx == -1:
+                            tmp = [
+                                instance.itemData(i) for i in range(instance.count())
+                            ]
+                            logger.error(
+                                "Could not find curmenu value %s in %s, but %s ",
+                                item.attrib["value"],
+                                item.attrib["id"],
+                                tmp,
+                            )
+                        else:
+                            logger.debug(
+                                f'Setting {item.attrib["id"]} to {item.attrib["value"]}'
+                            )
+                            instance.blockSignals(True)
+                            instance.setCurrentIndex(idx)
+                            instance.blockSignals(False)
                     else:
-                        # TODO: setCurrentIndex triggers callback, but here it should not
-                        logger.error(
-                            f'Setting {item.attrib["id"]} to {item.attrib["value"]}'
-                        )
-                        combo_box.setCurrentIndex(idx)
+                        logger.error(f"aNotImplementedError({(instance, item.attrib)}")
+
             s = set(item.attrib.keys())
             s.remove("id")
             s.remove("enable")
             if "value" in s:
                 s.remove("value")
-            if len(s) > 0:  # "option" in item.attrib or "option2" in item.attrib:
+            if len(s) > 0:  # "option", "option2", or "active" in item.attrib:
                 logger.error("handle attribs %s", item.attrib)
 
     @Slot(xml.etree.ElementTree.ElementTree)
@@ -207,11 +275,12 @@ class RecordSettingsWidget(QTabWidget):
             if grouped_item.attrib["cmd_mode"] == "setsetting":
                 if grouped_item.attrib["cmd_type"] not in self._setsetting_map:
                     self._setsetting_map[grouped_item.attrib["cmd_type"]] = combo_box
-            combo_box.setCurrentIndex(-1)
-            val2 = [grouped_item.attrib for grouped_item in grouped_items]
-            combo_box.currentIndexChanged.connect(
-                lambda x, val=val2: self.index_changed(val, x)
-            )
+
+        combo_box.setCurrentIndex(-1)
+        val2 = [grouped_item.attrib for grouped_item in grouped_items]
+        combo_box.currentIndexChanged.connect(
+            lambda x, val=val2: self._cam_cgi_from_combobox(val, x)
+        )
 
         sub_layout = QHBoxLayout()
         sub_layout.addWidget(QLabel(self._title_id(item.attrib)))
@@ -222,40 +291,47 @@ class RecordSettingsWidget(QTabWidget):
         func_type = item.attrib.get("func_type", "")
 
         friendly_name = self.g9ii.get_localized_setting_name(item.attrib["title_id"])
-
         if func_type == "select":
             self._add_select_item(item, layout)
-
-        elif func_type.startswith("sp_embeded_"):
-            # sp_embeded_*
-            #  * can have no children,
-            #  * an empty group as child or a group with items as children
-            if group := item.find("group"):
-                sub_layout = QHBoxLayout()
-                # self._id_map[item.attrib["id"]] = sub_layout
-                # sub_layout.addWidget(QLabel(friendly_name))
-                logger.error("Items of %s: %s", func_type, group)
-                sub_sub_layout = QVBoxLayout()
-                for sub_item in group.findall("item"):
-                    self._add_item(sub_item, sub_sub_layout, menu)
-                sub_layout.addLayout(sub_sub_layout)
-
-                group_box = QGroupBox(friendly_name)
-                self._id_map[item.attrib["id"]] = QGroupBox
-                group_box.setLayout(sub_layout)
-                layout.addWidget(group_box)
-
-        elif func_type == "submenu":
-            self._id_map[item.attrib["id"]] = layout
-            w = self._parse_menu(item.find("menu"))
-            if w:
-                group_box = QGroupBox(friendly_name)
-                sub_menu_layout = QHBoxLayout()
-                sub_menu_layout.addWidget(w)
-                group_box.setLayout(sub_menu_layout)
-                layout.addWidget(group_box)
         elif item.attrib.get("cmd_mode") == "setsetting":
-            if (
+            if func_type == "on_off":
+                check_box = QCheckBox()
+                check_box.setText(friendly_name)
+                check_box.checkStateChanged.connect(
+                    lambda state, x=item.attrib, y=check_box: self._cam_cgi_from_checkbox(
+                        state, x, y
+                    )
+                )
+                self._id_map[item.attrib["id"]] = check_box
+                if item.attrib.get("cmd_type") not in self._setsetting_map:
+                    self._setsetting_map[item.attrib.get("cmd_type")] = check_box
+                layout.addWidget(check_box)
+
+            elif "min_val" in item.attrib:
+                # TODO: menu_item_id_whitebalance_color_temp4 is inside a func_type select, thus check for min_val here does not hit
+
+                # TODO: https://doc.qt.io/qt-5/qspinbox.html
+                slider = QSpinBox()
+                slider.setMinimum(int(item.attrib["min_val"]))
+                slider.setMaximum(int(item.attrib["max_val"]))
+                slider.setSingleStep(int(item.attrib["step_val"]))
+                # TODO tick markers
+                slider.valueChanged.connect(
+                    lambda value, x=item.attrib: self._cam_cgi_from_slider(value, x)
+                )
+
+                self._id_map[item.attrib["id"]] = slider
+                if item.attrib.get("cmd_type") not in self._setsetting_map:
+                    self._setsetting_map[item.attrib.get("cmd_type")] = slider
+
+                sub_layout = QHBoxLayout()
+                sub_layout.addWidget(QLabel(friendly_name))
+                sub_layout.addWidget(QLabel(item.attrib["min_val"]))
+                sub_layout.addWidget(slider)
+                sub_layout.addWidget(QLabel(item.attrib["max_val"]))
+                layout.addLayout(sub_layout)
+
+            elif (
                 item.attrib.get("cmd_value") == "__value__"
                 or item.attrib.get("cmd_value2") == "__value__"
             ):
@@ -268,10 +344,10 @@ class RecordSettingsWidget(QTabWidget):
                 if item.attrib.get("cmd_type") not in self._setsetting_map:
                     self._setsetting_map[item.attrib.get("cmd_type")] = line_edit
 
-                l = QHBoxLayout()
-                l.addWidget(QLabel(friendly_name))
-                l.addWidget(line_edit)
-                layout.addLayout(l)
+                sub_layout = QHBoxLayout()
+                sub_layout.addWidget(QLabel(friendly_name))
+                sub_layout.addWidget(line_edit)
+                layout.addLayout(sub_layout)
             else:
 
                 # TODO The baroque parent_map could possible replaced by an
@@ -287,13 +363,60 @@ class RecordSettingsWidget(QTabWidget):
                     friendly_menu_name = self.g9ii.get_localized_setting_name(
                         self._allmenu_parent_map[menu].attrib["title_id"]
                     )
-                    l = QHBoxLayout()
-                    l.addWidget(QLabel(friendly_menu_name))
-                    l.addWidget(button)
-                    layout.addLayout(l)
+                    sub_layout = QHBoxLayout()
+                    sub_layout.addWidget(QLabel(friendly_menu_name))
+                    sub_layout.addWidget(button)
+                    layout.addLayout(sub_layout)
                 else:
                     layout.addWidget(button)
 
+        elif func_type.startswith("sp_embeded_"):
+            # sp_embeded_*
+            #  * can have no children,
+            #  * an empty group as child or a group with items as children
+            # logger.info("func_type %s: %s, %s", func_type, len(item.findall("group/")), len(item.findall("group//")))
+
+            direct_group_children = item.findall("group")
+            nested_group_children = item.findall("./group//group")
+            logger.debug(
+                "func_type %s: %s, %s",
+                func_type,
+                len(direct_group_children),
+                len(nested_group_children),
+            )
+
+            if len(direct_group_children) == 0:
+                return
+            elif len(direct_group_children) == 1:
+                if len(nested_group_children) > 0:
+                    group = direct_group_children[0]
+                    sub_layout = QHBoxLayout()
+                    # self._id_map[item.attrib["id"]] = sub_layout
+                    # sub_layout.addWidget(QLabel(friendly_name))
+                    logger.debug("Items of %s: %s", func_type, group)
+                    sub_sub_layout = QVBoxLayout()
+                    for sub_item in group.findall("item"):
+                        self._add_item(sub_item, sub_sub_layout, menu)
+                    sub_layout.addLayout(sub_sub_layout)
+
+                    group_box = QGroupBox(friendly_name)
+                    self._id_map[item.attrib["id"]] = QGroupBox
+                    group_box.setLayout(sub_layout)
+                    layout.addWidget(group_box)
+                else:
+                    self._add_select_item(item, layout)
+            else:
+                raise NotImplementedError(len(direct_group_children))
+
+        elif func_type == "submenu":
+            self._id_map[item.attrib["id"]] = layout
+            w = self._parse_menu(item.find("menu"))
+            if w:
+                group_box = QGroupBox(friendly_name)
+                sub_menu_layout = QHBoxLayout()
+                sub_menu_layout.addWidget(w)
+                group_box.setLayout(sub_menu_layout)
+                layout.addWidget(group_box)
         else:
             logger.error("Handle me" + str(item.attrib))
             label = QLabel("Handle me" + str(item.attrib))
@@ -330,8 +453,14 @@ class RecordSettingsWidget(QTabWidget):
 
                     index = widget.findData(user_data)
                     if index == -1:
+                        tmp = [
+                            widget.itemData(i) for i in range(widget.count())
+                        ]
                         logger.error(
-                            f"cannot find value {user_data} in QComboBox for {item['type']}"
+                            "Could not find setsetting value %s in %s, but %s ",
+                            item["value"],
+                            item["type"],
+                            tmp,
                         )
                     else:
                         widget.blockSignals(True)
@@ -340,13 +469,27 @@ class RecordSettingsWidget(QTabWidget):
 
                 elif isinstance(widget, QLineEdit):
                     widget.setText(item["value"])
+                elif isinstance(widget, QAbstractSlider) or isinstance(
+                    widget, QAbstractSpinBox
+                ):
+                    widget.setValue(int(item["value"]))
+                elif isinstance(widget, QCheckBox):
+                    if item["value"] == "on":
+                        widget.setChecked(True)
+                    elif item["value"] == "off":
+                        widget.setChecked(True)
+                    else:
+                        raise RuntimeError(
+                            f'Either "on" or "off" expected for {item} but got {item["value"]}'
+                        )
+
                 else:
                     logger.error("ERRROR")
             else:
                 logger.error(f"{item}, not in _setsetting_map")
 
     @_no_raise
-    def index_changed(self, val, i):
+    def _cam_cgi_from_combobox(self, val, i):
         try:
             self.g9ii.run_camcgi_from_dict(val[i])
         except RuntimeError as e:
@@ -367,5 +510,29 @@ class RecordSettingsWidget(QTabWidget):
             x["cmd_value"] = lineedit.text()
         if x.get("cmd_value2") == "__value__":
             x["cmd_value2"] = lineedit.text()
+        print("cam_cgi_dict", x)
+        self.g9ii.run_camcgi_from_dict(x)
+
+    @_no_raise
+    def _cam_cgi_from_checkbox(self, state, d: dict, check_box: QCheckBox):
+        if check_box.isChecked():
+            value = "on"
+        else:
+            value = "off"
+        x = d.copy()
+        if x["cmd_value"] == "__value__":
+            x["cmd_value"] = value
+        if x.get("cmd_value2") == "__value__":
+            x["cmd_value2"] = value
+
+        self.g9ii.run_camcgi_from_dict(x)
+
+    @_no_raise
+    def _cam_cgi_from_slider(self, value, d: dict):
+        x = d.copy()
+        if x["cmd_value"] == "__value__":
+            x["cmd_value"] = value
+        if x.get("cmd_value2") == "__value__":
+            x["cmd_value2"] = value
         print("cam_cgi_dict", x)
         self.g9ii.run_camcgi_from_dict(x)

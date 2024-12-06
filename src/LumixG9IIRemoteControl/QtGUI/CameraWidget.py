@@ -124,6 +124,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
+                logger.error(traceback.format_exception(e))
                 args[0].error_message.critical(
                     args[0],
                     "G9II Error",
@@ -145,6 +146,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
             try:
                 self.g9ii.connect(host=host_name)
             except Exception as e:
+                logger.error("\n".join(traceback.format_exception(e)))
                 self.error_message.critical(
                     self,
                     "G9II Error",
@@ -171,7 +173,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
         try:
             camera_hostname = find_lumix_camera_via_sspd()
         except RuntimeError as e:
-            traceback.print_exception(e)
+            logger.error(traceback.format_exception(e))
             self.camera_hostname.setPlaceholderText("no camera found")
             self.camera_hostname.setText(None)
             self.error_message.critical(

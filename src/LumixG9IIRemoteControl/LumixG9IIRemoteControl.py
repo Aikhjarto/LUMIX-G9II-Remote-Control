@@ -575,7 +575,16 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params=params,
         )
-        return self._check_ret_ok(ret)
+        ret = self._check_ret_ok(ret)
+
+        # read back since some parameters are accepted by camera without an error,
+        # but internally adjusted, e.g., apterture can be set outside the region, the 
+        # lens can handle.
+        self._get_curmenu()
+        if params['cmd_mode'] == 'setsetting':
+            logger.info(self.get_settings(settings_list=[params['cmd_type']]))
+
+        return ret
 
     @_requires_connected
     def _get_capability(self):
@@ -662,10 +671,16 @@ class LumixG9IIRemoteControl:
         # add shutter speed
         item = xml.etree.ElementTree.SubElement(menu, "item")
         item.set("id", "menu_item_id_shtrspeed")
-        item.set("title_id", "title_shtrspeed")
+        item.set("title_id", "Shutter Speed")
         item.set("func_type", "select")
         group = xml.etree.ElementTree.SubElement(item, "group")
         for cmd_value, text in (
+            ("3840/256", "32000"),
+            ("3755/256", "25000"),
+            ("3670/256", "20000"),
+            ("3584/256", "16000"),
+            ("3499/256", "13000"),
+            ("3414/256", "10000"),
             ("3328/256", "8000"),
             ("3243/256", "6400"),
             ("3158/256", "5000"),
@@ -741,7 +756,7 @@ class LumixG9IIRemoteControl:
         # add aperture
         item = xml.etree.ElementTree.SubElement(menu, "item")
         item.set("id", "menu_item_id_focal")
-        item.set("title_id", "title_focal")
+        item.set("title_id", "Aperture")
         item.set("func_type", "select")
         group = xml.etree.ElementTree.SubElement(item, "group")
         for cmd_value, text in (
@@ -769,6 +784,9 @@ class LumixG9IIRemoteControl:
             ("1878/256", "13"),
             ("1963/256", "14"),
             ("2048/256", "16"),
+            ("2134/256", "18"),
+            ("2219/256", "20"),
+            ("2304/256", "22"),
         ):
             item = xml.etree.ElementTree.SubElement(group, "item")
             title_id = f"title_focal_{cmd_value}"
@@ -1394,27 +1412,29 @@ class LumixG9IIRemoteControl:
         return self.set_setting("current_sd", value=f"sd{value:d}")
 
     @_requires_connected
-    def get_settings(self) -> List[Dict[str, str]]:
+    def get_settings(self, settings_list: List[str]= None) -> List[Dict[str, str]]:
         data = []
-        lst = list(self.get_setsetting_commands().keys())
-        settings_not_in_get_set_settings = [
-            "play_sort_mode",
-            "qmenu_disp_style",
-            "photostyle2",
-            "current_sd",
-        ]
-        read_only_settings = [
+    
+        write_only_settings = [
             "liveviewsize",
             "recmode",
             "videoquality_filter",
             "photostyle",
         ]
+        if settings_list is None:
+            settings_list = list(self.get_setsetting_commands().keys())
+            settings_not_in_get_set_settings = [
+                "play_sort_mode",
+                "qmenu_disp_style",
+                "photostyle2",
+                "current_sd",
+            ]
 
-        "play_sort_mode can be file_no or date"
-        lst.extend(settings_not_in_get_set_settings)
+            "play_sort_mode can be file_no or date"
+            settings_list.extend(settings_not_in_get_set_settings)
 
-        for setsetting_cmd in lst:
-            if setsetting_cmd not in read_only_settings:
+        for setsetting_cmd in settings_list:
+            if setsetting_cmd not in write_only_settings:
                 try:
                     data.append(self.get_setting(setsetting_cmd))
                 except RuntimeError:
