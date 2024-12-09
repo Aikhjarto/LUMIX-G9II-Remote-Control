@@ -10,6 +10,7 @@ import defusedxml.ElementTree
 
 logging.basicConfig()
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -129,4 +130,11 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                     self.headers,
                     payload,
                 )
-            self.send_response_only(200)
+        else:
+            logger.debug(
+                "NOTIFY Message for path %s\nHeaders: \n%s\nPayload:\n%s\n",
+                self.path,
+                self.headers,
+                payload,
+            )
+        self.send_response_only(200)

@@ -7,6 +7,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import urllib.response
 import xml.etree.ElementTree
 from typing import Dict, List, Literal, Tuple, Union, get_type_hints
 
@@ -303,6 +304,8 @@ class LumixG9IIRemoteControl:
         # Request state thread handles
         # camera hold connection as long as state is requested periodically
         self._request_lock = threading.Lock()
+        self._cam_not_busy = threading.Event()
+        self._cam_not_busy.set()
         self._keepalive: bool = True
         self._state_thread: threading.Thread = None
 
@@ -392,7 +395,16 @@ class LumixG9IIRemoteControl:
             return func(*args, **kwargs)
 
         return _decorated
-
+    
+    def _requires_not_busy(func):
+        def _decorated(self, *args, **kwargs):
+            if self._cam_not_busy.isSet():
+                return func(self, *args, **kwargs)
+            else:
+                logger.error('Cam is busy, ignoring command.')
+            
+        return _decorated
+            
     def _requires_host(func):
         def _decorated(*args, **kwargs):
             if not args[0]._host:
@@ -448,7 +460,7 @@ class LumixG9IIRemoteControl:
                 headers=self._headers,
                 params={"mode": "accctrl", "type": "req_acc_g"},
             )
-            self._check_ret_ok(ret)
+            self._parse_return_value_from_camera(ret)
 
             value = (
                 "e4bf9a00e1b8e700e1baee19e1baf304e9a6"
@@ -467,7 +479,7 @@ class LumixG9IIRemoteControl:
                 },
             )
 
-            assert ret.ok
+            self._assert_ret_ok(ret)
             data = ret.text.strip().split(",")
             assert data[1] == self.device_info_dict["friendlyName"]
             assert data[2] == "remote"
@@ -483,7 +495,7 @@ class LumixG9IIRemoteControl:
                     "value2": value2,
                 },
             )
-            data = self._check_ret_ok(ret)
+            data = self._parse_return_value_from_camera(ret)
             assert data[0] == self.device_info_dict["friendlyName"]
             assert data[1] == "remote"
             assert data[2] == "open"
@@ -498,7 +510,7 @@ class LumixG9IIRemoteControl:
                     "value": self.local_device_name,
                 },
             )
-            self._check_ret_ok(ret)
+            self._parse_return_value_from_camera(ret)
 
         self._keepalive = True
         self._state_thread = threading.Thread(
@@ -513,6 +525,7 @@ class LumixG9IIRemoteControl:
         self.get_touch_type()
         self._get_curmenu()
         self._subscribe_to_camera_events()
+        self.get_settings()
         logger.info("Connected to %s", str(self))
 
     def disconnect(self):
@@ -542,7 +555,7 @@ class LumixG9IIRemoteControl:
     @_requires_host
     def _get_device_info_via_ddd(self):
         ret = requests.get(f"http://{self._host}:60606/Lumix/Server0/ddd")
-        assert ret.ok
+        self._assert_ret_ok(ret)
         self._ddd_tree = defusedxml.ElementTree.fromstring(ret.text)
         if self.store_queries:
             with open("ddd.xml", "wb") as f:
@@ -575,14 +588,14 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params=params,
         )
-        ret = self._check_ret_ok(ret)
+        ret = self._parse_return_value_from_camera(ret)
 
         # read back since some parameters are accepted by camera without an error,
-        # but internally adjusted, e.g., apterture can be set outside the region, the 
+        # but internally adjusted, e.g., apterture can be set outside the region, the
         # lens can handle.
         self._get_curmenu()
-        if params['cmd_mode'] == 'setsetting':
-            logger.info(self.get_settings(settings_list=[params['cmd_type']]))
+        if params["cmd_mode"] == "setsetting":
+            logger.info(self.get_settings(settings_list=[params["cmd_type"]]))
 
         return ret
 
@@ -593,7 +606,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "capability"},
         )
-        self._capability_tree = self._check_ret_ok(ret)
+        self._capability_tree = self._parse_return_value_from_camera(ret)
 
         if self.store_queries:
             with open("capabilties.xml", "wb") as f:
@@ -611,7 +624,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "allmenu"},
         )
-        self._allmenu_tree = self._check_ret_ok(ret)
+        self._allmenu_tree = self._parse_return_value_from_camera(ret)
         if self.store_queries:
             with open("allmenu.xml", "wb") as f:
                 xml.etree.ElementTree.indent(self._allmenu_tree)
@@ -807,7 +820,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "curmenu"},
         )
-        self._curmenu_tree = self._check_ret_ok(ret)
+        self._curmenu_tree = self._parse_return_value_from_camera(ret)
         menuinfo = self._curmenu_tree.find("menuinfo")
         for i, tag in zip((1, 2), ("", "2")):
             key = f"sd{tag}_memory"
@@ -842,7 +855,7 @@ class LumixG9IIRemoteControl:
         ret = requests.get(
             self._cam_cgi, headers=self._headers, params={"mode": "getstate"}
         )
-        et = self._check_ret_ok(ret)
+        et = self._parse_return_value_from_camera(ret)
 
         self.camera_state_dict = {}
         for i in et.find("state"):
@@ -858,9 +871,12 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "lens"},
         )
-        data = self._check_ret_ok(ret)
+        data = self._parse_return_value_from_camera(ret)
         self._lens_data = data
         self.lens_dict = {
+            "current_aperture_limit": data[0],
+            "minimum_mechanical_shutter_speed": data[1],
+            "maximum_mechanical_shutter_speed": data[2],
             "maximum_focal_length": data[6],
             "minmal_focal_length": data[7],
             "mount": data[12],
@@ -869,6 +885,7 @@ class LumixG9IIRemoteControl:
             "serial_number": data[15],
         }
         self._publish_state_change("lens_dict", self.lens_dict)
+        logger.info("Lens data: %s, Lens dict: %s", self._lens_data, self.lens_dict)
         # TODO: decode other fields
         return data[1:]
 
@@ -879,7 +896,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getsetting", "type": "ex_tele_conv"},
         )
-        self._external_teleconverter_tree = self._check_ret_ok(ret)
+        self._external_teleconverter_tree = self._parse_return_value_from_camera(ret)
         return self._external_teleconverter_tree
 
     @_requires_connected
@@ -889,7 +906,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getsetting", "type": "touch_type"},
         )
-        self.touch_type = self._check_ret_ok(ret)
+        self.touch_type = self._parse_return_value_from_camera(ret)
         return self.touch_type
 
     @_requires_connected
@@ -906,7 +923,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params=params,
         )
-        data = self._check_ret_ok(ret)
+        data = self._parse_return_value_from_camera(ret)
         logger.debug("drag %s move to coordinates %s", value, data)
         return data
 
@@ -932,7 +949,7 @@ class LumixG9IIRemoteControl:
                 headers=self._headers,
                 params=params,
             )
-            data = self._check_ret_ok(ret)
+            data = self._parse_return_value_from_camera(ret)
             time.sleep(0.2)
             # data is [0,0] for value start and stop
             # data is [557,469] representing the value that where actually set
@@ -967,7 +984,7 @@ class LumixG9IIRemoteControl:
                 "value2": "on",
             },
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     # def lcd_off(self):
     #     # TODO: throws err_param
@@ -978,69 +995,77 @@ class LumixG9IIRemoteControl:
     #     )
     #     self._check_ret_ok(ret)
     @_requires_connected
+    @_requires_not_busy
     def lcd_on(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "lcd_on"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def menu_entry(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "menu_entry"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def video_recstart(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "video_recstart"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def video_recstop(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "video_recstop"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def set_recmode(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "recmode"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def set_playmode(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "playmode"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def poweroff(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "poweroff"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def start_stream(self, port=49152, spawn_viewer=False):
         # TODO: maybe not working with all ports as some ports are used by other
         # protocols, like 50001, or 60606. However, command never fails. Thus,
@@ -1054,7 +1079,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "startstream", "value": {port}},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
         # TODO: stop stream when window is closed
         if spawn_viewer:
@@ -1073,13 +1098,15 @@ class LumixG9IIRemoteControl:
                 )
 
     @_requires_connected
+    @_requires_not_busy
     def stop_stream(self):
         ret = requests.get(
             self._cam_cgi, headers=self._headers, params={"mode": "stopstream"}
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
+    @_requires_not_busy
     def move_focus(self, step: FocusSteps):
         """
         Move focus in predefined steps.
@@ -1090,7 +1117,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camctrl", "type": "focus", "value": step},
         )
-        data = self._check_ret_ok(ret)
+        data = self._parse_return_value_from_camera(ret)
         logger.info("Focus values: %s", data)
         # ok,564,1024,0,0,1024,1000/295,500/537,300/779,0/0,0/0,0/0,0/0
         # TODO: decode all values. First value seems to be focus distance starting from zero
@@ -1103,7 +1130,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camcmd", "value": "capture"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def oneshot_af(self):
@@ -1112,7 +1139,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camcmd", "value": "oneshot_af"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def touchcapt_ctrl(self, value):
@@ -1124,13 +1151,13 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camctrl", "type": "touchcapt_ctrl", "value": value},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def touchae_ctrl(self, value):
         """
-        Send a send_touch_coordinate after touchae_ctrl('on') to move the auto exposure measurement
-        to a certain point.
+        Send a send_touch_coordinate after touchae_ctrl('on')
+        to move the auto exposure measurement to a certain point.
 
         Then send touchae_ctrl('off')
         Paramters
@@ -1145,7 +1172,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camctrl", "type": "touchae_ctrl", "value": value},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def set_assistance_display(self, value, value2):
@@ -1168,7 +1195,7 @@ class LumixG9IIRemoteControl:
             },
         )
         try:
-            data = self._check_ret_ok(ret)
+            data = self._parse_return_value_from_camera(ret)
             # data: ok,off,300,619,471,600,300
             # off can be pinp or full
             # TODO check values and cache them
@@ -1178,13 +1205,14 @@ class LumixG9IIRemoteControl:
 
     @_requires_connected
     def capture_cancel(self):
-        # TODO:: a long exposure cannot be canceld, but maybe a series or stepmotion capture can be canceld
+        # TODO:: a long exposure cannot be canceld,
+        # but maybe a series or stepmotion capture can be canceld
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "capture_cancel"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def autoreviewunlock(self):
@@ -1193,16 +1221,16 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "camcmd", "value": "autoreviewunlock"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
-    def autoreviewunlock(self):
+    def touchrelease(self):
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
             params={"mode": "camcmd", "value": "touchrelease"},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def get_content_info(self):
@@ -1232,18 +1260,20 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "get_content_info"},
         )
-        et: xml.etree.ElementTree.ElementTree = self._check_ret_ok(ret)
+        et: xml.etree.ElementTree.ElementTree = self._parse_return_value_from_camera(ret)
         d = {}
         for item in et:
             if item.tag != "result":
                 d[item.tag] = int(item.text)
         return d
 
-    def _check_ret_ok(
+    def _parse_return_value_from_camera(
         self, ret: requests.Response, N=0
     ) -> Union[xml.etree.ElementTree.Element, List[str]]:
-        assert ret.ok
-        assert ret.headers["Server"] == "Panasonic"
+        self._assert_ret_ok(ret)
+
+        assert ret.headers["Server"] == "Panasonic", "header 'Server' is not 'Panasonic', maybe connected to wrong device"
+
         if (
             ret.headers["Content-Type"] == "text/xml"
             or ret.headers["Content-Type"] == "xml"
@@ -1268,7 +1298,7 @@ class LumixG9IIRemoteControl:
             )
             time.sleep(self.retry_busy_interval)
             ret2 = ret.connection.send(ret.request)
-            return self._check_ret_ok(ret2, N=N + 1)
+            return self._parse_return_value_from_camera(ret2, N=N + 1)
         else:
             if state == "err_param":
                 e = ValueError(f"{ret.url} resulted in {state}")
@@ -1388,7 +1418,7 @@ class LumixG9IIRemoteControl:
         if value2 is not None:
             params["value2"] = value2
         ret = requests.get(self._cam_cgi, headers=self._headers, params=params)
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     @_requires_connected
     def get_setting(self, setting) -> Dict[Literal["type", "value", "value2"], str]:
@@ -1397,13 +1427,13 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getsetting", "type": setting},
         )
-        res: xml.etree.ElementTree.Element = self._check_ret_ok(ret)[1]
+        res: xml.etree.ElementTree.Element = self._parse_return_value_from_camera(ret)[1]
         data = {}
         if len(res.attrib) == 1:
             data["type"] = list(res.attrib.keys())[0]
             data["value"] = list(res.attrib.values())[0]
 
-            if text := self._check_ret_ok(ret)[1].text:
+            if text := self._parse_return_value_from_camera(ret)[1].text:
                 data["value2"] = text
         return data
 
@@ -1412,9 +1442,9 @@ class LumixG9IIRemoteControl:
         return self.set_setting("current_sd", value=f"sd{value:d}")
 
     @_requires_connected
-    def get_settings(self, settings_list: List[str]= None) -> List[Dict[str, str]]:
+    def get_settings(self, settings_list: List[str] = None) -> List[Dict[str, str]]:
         data = []
-    
+
         write_only_settings = [
             "liveviewsize",
             "recmode",
@@ -1462,7 +1492,7 @@ class LumixG9IIRemoteControl:
         prepared_request = request.prepare()
         session = requests.Session()
         ret = session.send(prepared_request)
-        assert ret.ok
+        self._assert_ret_ok(ret)
 
         if self._event_thread is None:
             self._event_thread = threading.Thread(
@@ -1472,6 +1502,14 @@ class LumixG9IIRemoteControl:
             )
             self._event_thread.start()
 
+    def _assert_ret_ok(self, ret: requests.Response):
+        if not ret.ok:
+            logger.error('Request %s failed with %s',
+                         ret.url, ret.reason)
+            e = RuntimeError(f"Request {ret.url}, failed with {ret.reason}")
+            self._zmq_socket.send_pyobj({"type": "exception", "data": e}, zmq.NOBLOCK)
+            raise e
+        
     @_requires_connected
     def raw_img_send_enable(self, status: bool):
         if status:
@@ -1483,7 +1521,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "setsetting", "type": "raw_img_send", "value": value},
         )
-        self._check_ret_ok(ret)
+        self._parse_return_value_from_camera(ret)
 
     def get_capability(self):
         # TODO analyze whats in there (it is the same in rec and play mode)
@@ -1492,7 +1530,7 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getinfo", "type": "capability"},
         )
-        return self._check_ret_ok(ret)
+        return self._parse_return_value_from_camera(ret)
 
     def _camera_event_callback(self, data: Tuple[str, str]):
         """
@@ -1500,26 +1538,55 @@ class LumixG9IIRemoteControl:
 
         SinkProtocolInfo is always empty string
 
-        CurrentConnectionIDs is an integer number
+        CurrentConnectionIDs is an integer number, maybe used with cds queries
 
         X_Panasonic_Cam_VRec can have string "start" and "done"
 
         X_Panasonic_Cam_Sync can have the following text:
-        busy, update, lens_Update, lens_Deta, lens_Atta, mod_Play, mod_Rec
+            * busy,
+            * update,
+            * lens_Update,
+            * lens_Deta,
+            * lens_Atta,
+            * mod_Play,
+            * mod_Rec
 
-        lens_update is NOT sent, when a control ring of the lens is moved
+        lens_Update is NOT sent, when a control ring of the lens is moved
 
-        When detatching a lens camera sends: busy, lens_Deta, lens_Update, lens_Deta, lens_Update, update
-        When attaching a lens, camera sends: busy, lens_Atta, lens_Update, update, lens_Atta
+        When detatching a lens camera sends:
+            * busy,
+            * lens_Deta,
+            * lens_Update,
+            * lens_Deta,
+            * lens_Update,
+            * update
 
-        busy is sent, when one of the camera is operated manually while a remote connection is still alive. When the manual operation stops, `update` and `lens_Atta` events are sent.
+        When attaching a lens, camera sends:
+            * busy,
+            * lens_Atta,
+            * lens_Update,
+            * update,
+            * lens_Atta
+
+        busy is sent, when one of the camera is operated manually,
+        while a remote connection is still alive.
+        When the manual operation stops, `update` and `lens_Atta` events are sent.
         """
         logger.info("Got event notification from camera %s", data)
         self._publish_state_change("camera_event", data)
-        self._get_curmenu()
-        self.get_settings()
-        # TODO: make a more meaningful callback that calls get_lens on lens changes and curmenu on
-        # mode changes and locks sending event while busy is active
+        if data[0] == "X_Panasonic_Cam_Sync":
+            if data[1] == 'busy':
+                self._cam_not_busy.clear()
+            else:
+                self._cam_not_busy.set()
+
+            if data[1].startswith('lens_'):
+                self.get_lens()
+            if data[1] == 'update':
+                self._get_curmenu()
+                self.get_settings()
+        # TODO: make a more meaningful callback that calls get_lens on lens changes
+        # and curmenu on mode changes and locks sending event while busy is active
 
     @_requires_host
     def _run_event_capture_server_blocking(self, port):
@@ -1628,7 +1695,8 @@ class LumixG9IIRemoteControl:
         if ret.ok:
             return decode_cds_query_response(ret.text)
         else:
-            # TODO when camera started in play mode, this error occurs until switching to recmode and back to play mode
+            # TODO when camera started in play mode,
+            # this error occurs until switching to recmode and back to play mode
             raise RuntimeError(
                 "Request %s\n resulted in %s \n with answer %s\n"
                 "Ensure you are in play mode and your filters are correct."
@@ -1653,7 +1721,7 @@ class LumixG9IIRemoteControl:
         # string is like DL01112176.JPG
         # DT01112176.JPG
         ret = requests.get(f"http://{self.host}/{string}", headers=self._headers)
-        assert ret.ok
+        self._assert_ret_ok(ret)
 
         # TODO: Header looks like this
         # HTTP/1.1 200 OK'

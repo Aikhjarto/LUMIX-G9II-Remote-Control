@@ -168,7 +168,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
     def _find_camera(self):
         QApplication.sendEvent(
-            self, QtGui.QStatusTipEvent(f"Searching for Camera on the network")
+            self, QtGui.QStatusTipEvent("Searching for Camera on the network")
         )
         try:
             camera_hostname = find_lumix_camera_via_sspd()

@@ -68,9 +68,6 @@ class PlayModeWidget(QWidget):
 
         # TODO: the first thumbnail requests are fast, the last 6 are really slow, like 1 minute
         self._network_access_manager = QNetworkAccessManager(self)
-        self._network_access_manager.finished.connect(
-            self._thumbnail_request_finished_callback
-        )
 
         # map remote path to local table item
         self._items_dict: Dict[str, QTableWidgetItem] = {}
@@ -233,7 +230,7 @@ class PlayModeWidget(QWidget):
         self.host = d["host"]
         self._headers = d["headers"]
 
-    def send_request(
+    def _send_thumbnail_request(
         self, url: str, priority: QNetworkRequest.Priority.HighPriority = None
     ):
         qurl = QUrl(url)
@@ -243,41 +240,54 @@ class PlayModeWidget(QWidget):
             request.setPriority(priority)
         for key, value in self._headers.items():
             request.setRawHeader(key.encode(), value.encode())
-        self._network_access_manager.get(request)
+        reply = self._network_access_manager.get(request)
+        reply.finished.connect(self._thumbnail_request_finished_callback)
+        reply.errorOccurred.connect(self._thumbnail_request_failed_callback)
+
+    def _thumbnail_request_failed_callback(self, error: QNetworkReply.NetworkError):
+        logger.error("Thumbnail request failed with error %s", error)
 
     def _thumbnail_request_finished_callback(self, reply: QNetworkReply):
         if not reply.isFinished():
             logger.error("reply {reply} is not finished!")
             return
 
-        key = reply.url().path()
-        data = reply.readAll()
-        item = self._items_dict[key]
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            logger.error(
+                "Thumbnail request %s failed with error %s", reply.url(), reply.error()
+            )
 
-        pixmap = QtGui.QPixmap()
-        pixmap.loadFromData(data)
+        else:
 
-        if pixmap.height() > self._large_thumbnail_height:
-            pixmap = pixmap.scaledToHeight(self._large_thumbnail_height)
-        item.setData(QtCore.Qt.ItemDataRole.DecorationRole, pixmap)
-        item.setText("")
-        row = item.row()
-        item.tableWidget().resizeRowToContents(row)
-        item.tableWidget().resizeColumnToContents(0)
-        self._thumbnail_cache[key] = (pixmap, data)
+            key = reply.url().path()
+            data = reply.readAll()
+            item = self._items_dict[key]
 
-        replies_in_queue: List[QNetworkReply] = reply.manager().findChildren(
-            QNetworkReply
-        )
-        count_finished = 0
-        for child in replies_in_queue:
-            if child.isFinished():
-                count_finished += 1
+            pixmap = QtGui.QPixmap()
+            pixmap.loadFromData(data)
 
-        logger.info(
-            f"Got {reply.url().toString()} pixmap w/h {pixmap.width()}/{pixmap.height()} "
-            f"{count_finished}/{len(replies_in_queue)} finished"
-        )
+            if pixmap.height() > self._large_thumbnail_height:
+                pixmap = pixmap.scaledToHeight(self._large_thumbnail_height)
+            item.setData(QtCore.Qt.ItemDataRole.DecorationRole, pixmap)
+            item.setText("")
+            row = item.row()
+            item.tableWidget().resizeRowToContents(row)
+            item.tableWidget().resizeColumnToContents(0)
+            self._thumbnail_cache[key] = (pixmap, data)
+
+            replies_in_queue: List[QNetworkReply] = reply.manager().findChildren(
+                QNetworkReply
+            )
+            count_finished = 0
+            for child in replies_in_queue:
+                if child.isFinished():
+                    count_finished += 1
+
+            logger.info(
+                f"Got {reply.url().toString()} pixmap w/h {pixmap.width()}/{pixmap.height()} "
+                f"{count_finished}/{len(replies_in_queue)} finished"
+            )
+
         reply.deleteLater()
 
     def _new_thumbnail_image_item(self, uri: str, priority=None):
@@ -292,7 +302,7 @@ class PlayModeWidget(QWidget):
             )
         else:
             item.setText(uri)
-            self.send_request(uri, priority=priority)
+            self._send_thumbnail_request(uri, priority=priority)
 
         return item
 
@@ -332,7 +342,8 @@ class PlayModeWidget(QWidget):
                 )
             else:
                 logger.error(
-                    "Not implementent: container openend bevor thumbnail was fetched"
+                    "Not implementend: container openend bevor thumbnail was fetched, "
+                    "thus icon is missing"
                 )
                 idx = self.tab_widget.addTab(
                     self.play_mode_table_widgets[container.id], container.id

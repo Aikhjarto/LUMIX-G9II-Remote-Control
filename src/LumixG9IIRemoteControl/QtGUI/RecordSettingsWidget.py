@@ -79,7 +79,9 @@ class RecordSettingsWidget(QTabWidget):
         return no_raise
 
     @Slot(xml.etree.ElementTree.ElementTree)
-    def apply_curmenu_xml(self, curmenu_tree: xml.etree.ElementTree.ElementTree, adhere_enabeled=False):
+    def apply_curmenu_xml(
+        self, curmenu_tree: xml.etree.ElementTree.ElementTree, adhere_enabeled=False
+    ):
         # TODO: setting curmenu triggeres change signals
         # each change signal triggers setsetting command, which triggers curmenu.
         # Thus it requires a long time to settle
@@ -156,17 +158,18 @@ class RecordSettingsWidget(QTabWidget):
 
                 value = item.attrib.get("value")
                 if value:
-                    if isinstance(instance, QAbstractSlider):
+                    if isinstance(instance, QAbstractSlider) or isinstance(instance, QAbstractSpinBox):
                         instance.blockSignals(True)
                         instance.setValue(int(value))
                         instance.blockSignals(False)
+
                     elif isinstance(instance, QLineEdit):
                         instance.blockSignals(True)
                         instance.setText(value)
                         instance.blockSignals(False)
 
                     elif isinstance(instance, QCheckBox):
-                        if item.attrib['id'] == "menu_item_id_interval_expo_leveling":
+                        if item.attrib["id"] == "menu_item_id_interval_expo_leveling":
                             continue
                         checked = None
                         if value == "on":
@@ -189,6 +192,7 @@ class RecordSettingsWidget(QTabWidget):
                         user_data = item.attrib["value"]
                         if "value2" in item.attrib:
                             user_data = user_data + "," + item.attrib["value2"]
+
                         idx = instance.findData(user_data)
                         if idx == -1:
                             tmp = [
@@ -255,9 +259,17 @@ class RecordSettingsWidget(QTabWidget):
         combo_box = QComboBox()
         self._id_map[item.attrib["id"]] = combo_box
         for idx, grouped_item in enumerate(grouped_items):
+            if 'min_val' in grouped_item.attrib or 'max_val' in grouped_item.attrib or 'step_val' in grouped_item.attrib:
+                logger.error("Notimplemented: %s appeared in select group %s",
+                             grouped_item.attrib, item.attrib)
+                continue
+
             user_data = grouped_item.attrib["cmd_value"]
             if "cmd_value2" in grouped_item.attrib:
-                user_data = user_data + "," + grouped_item.attrib["cmd_value2"]
+                if grouped_item.attrib['cmd_type'] == 'drivemode':
+                    user_data = grouped_item.attrib["cmd_value2"]
+                else:
+                    user_data = user_data + "," + grouped_item.attrib["cmd_value2"]
 
             combo_box.addItem(
                 self._title_id(grouped_item.attrib),
@@ -336,7 +348,6 @@ class RecordSettingsWidget(QTabWidget):
                 or item.attrib.get("cmd_value2") == "__value__"
             ):
                 line_edit = QLineEdit()
-                line_edit.setPlaceholderText("mlbel")
                 line_edit.returnPressed.connect(
                     lambda x=item.attrib, y=line_edit: self._cam_cgi_from_lineedit(x, y)
                 )
@@ -400,7 +411,7 @@ class RecordSettingsWidget(QTabWidget):
                     sub_layout.addLayout(sub_sub_layout)
 
                     group_box = QGroupBox(friendly_name)
-                    self._id_map[item.attrib["id"]] = QGroupBox
+                    self._id_map[item.attrib["id"]] = group_box
                     group_box.setLayout(sub_layout)
                     layout.addWidget(group_box)
                 else:
@@ -443,22 +454,19 @@ class RecordSettingsWidget(QTabWidget):
         self, data: List[Dict[Literal["type", "value", "value2"], str]]
     ):
         for item in data:
-
             if item["type"] in self._setsetting_map:
                 widget = self._setsetting_map[item["type"]]
                 if isinstance(widget, QComboBox):
                     user_data = item["value"]
-                    if "value2" in item:
+                    if "value2" in item and item['type'] != 'drivemode':
                         user_data = user_data + "," + item["value2"]
 
                     index = widget.findData(user_data)
                     if index == -1:
-                        tmp = [
-                            widget.itemData(i) for i in range(widget.count())
-                        ]
+                        tmp = [widget.itemData(i) for i in range(widget.count())]
                         logger.error(
                             "Could not find setsetting value %s in %s, but %s ",
-                            item["value"],
+                            user_data,
                             item["type"],
                             tmp,
                         )
