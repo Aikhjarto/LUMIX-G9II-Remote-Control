@@ -24,11 +24,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ..configure_logging import logger
 from .LiveStreamWidget import LiveStreamWidget
 from .RecordSettingsWidget import RecordSettingsWidget
-
-logging.basicConfig()
-logger = logging.getLogger()
 
 
 class RecModeWidget(QWidget):
@@ -154,27 +152,23 @@ class RecModeWidget(QWidget):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                logger.error(traceback.format_exception(e))
+                logger.exception(e)
                 args[0].error_message.critical(
                     args[0],
                     "Error",
                     "\n".join(traceback.format_exception_only(e)),
                 )
 
-                traceback.print_exception(e)
-
         return no_raise
 
     @_no_raise
     def _livestream_toggle(self, *args):
         if self.livestream_button.isChecked():
-            print("Start stream")
+            logger.info("Start stream")
             self.cameraCommandRequest.emit({"function": "start_stream"})
-            # return self.camera_widget.g9ii.start_stream()
         else:
-            print("stop stream")
+            logger.info("Stop stream")
             self.cameraCommandRequest.emit({"function": "stop_stream"})
-            # return self.camera_widget.g9ii.stop_stream()
 
     def _touchcapt_toggle(self, *args):
         checked = self.touchcapt_ctrl_button.isChecked()

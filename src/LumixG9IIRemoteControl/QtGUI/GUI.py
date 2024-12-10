@@ -28,15 +28,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..LumixG9IIRemoteControl import add_general_options_to_parser
+from ..configure_logging import logger
+from ..parser import add_general_options_to_parser
 from .CameraWidget import CameraWidget
-from .console import EmbedIPythonWidget
+from .ConsoleWidget import EmbedIPythonWidget
 from .PlayModeWidget import PlayModeWidget
 from .RecModeWidget import RecModeWidget
-
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel("INFO")
 
 
 class MainWindow(QMainWindow):
@@ -171,40 +168,46 @@ def parse_command_line_arguments() -> argparse.Namespace:
 
 def main():
 
-    # noinspection PyUnusedLocal
-    def sigint_handler(*args, **kwargs):
-        QApplication.quit()
+    try:
+        # noinspection PyUnusedLocal
+        def sigint_handler(*args, **kwargs):
+            QApplication.quit()
 
-    signal.signal(signal.SIGINT, sigint_handler)
-    app = QApplication(sys.argv)
+        signal.signal(signal.SIGINT, sigint_handler)
+        app = QApplication(sys.argv)
 
-    mw = MainWindow()
+        mw = MainWindow()
 
-    qtconsole = EmbedIPythonWidget()
-    qtconsole.update_console_namespace(
-        "LumixG9IIRemoteControl.QtGUI.GUI", type(mw).__name__, "mw"
-    )
+        qtconsole = EmbedIPythonWidget()
+        qtconsole.update_console_namespace(
+            "LumixG9IIRemoteControl.QtGUI.GUI", type(mw).__name__, "mw"
+        )
 
-    # Let the interpreter run periodically to capture SIGINT/CTRL+C when GUI is in background
-    timer = QTimer()
-    timer.start(200)
-    timer.timeout.connect(lambda: None)
+        # Let the interpreter run periodically to capture SIGINT/CTRL+C when GUI is in background
+        timer = QTimer()
+        timer.start(200)
+        timer.timeout.connect(lambda: None)
 
-    args = parse_command_line_arguments()
+        args = parse_command_line_arguments()
 
-    if args.hostname:
-        mw.camera_widget.camera_hostname.setText(args.hostname)
+        if args.hostname:
+            mw.camera_widget.camera_hostname.setText(args.hostname)
 
-    if args.developer_mode:
-        qtconsole.show()
-        mw.camera_widget.g9ii.store_queries = True
+        if args.developer_mode:
+            qtconsole.show()
+            mw.camera_widget.g9ii.store_queries = True
 
-    if args.auto_connect:
-        mw.camera_widget.connect_button.click()
+        if args.auto_connect:
+            mw.camera_widget.connect_button.click()
 
-    mw.show()
+        mw.show()
 
-    app.exec()
+        app.exec()
+    except Exception as e:
+        logger.exception(e)
+        logger.error("AAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        logger.exception(traceback.format_exception())
+        raise e
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from typing_extensions import Buffer
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel("DEBUG")
-uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
+# uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
 
 
 # https://github.com/hbldh/bleak/blob/master/examples/detection_callback.py
@@ -23,14 +23,14 @@ uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
 def detection_callback(
     device: bleak.BLEDevice, advertisement_data: bleak.AdvertisementData
 ):
-    # logger.warning("%s: %r", device.address, advertisement_data)
+    logger.info("%s: %r", device.address, advertisement_data)
     pass
 
 
 def device_filter(device: bleak.BLEDevice, advertisement_data: bleak.AdvertisementData):
     if advertisement_data and advertisement_data.local_name:
         if advertisement_data.local_name.startswith("G9M2"):
-            logger.warning("Device Filter %s: %r", device.address, advertisement_data)
+            logger.info("Device Filter %s: %r", device.address, advertisement_data)
             return True
 
 
@@ -38,10 +38,10 @@ def notification_handler(
     characteristic: bleak.BleakGATTCharacteristic, data: bytearray
 ):
     """Simple notification handler which prints the data received."""
-    logger.warning("%s: %r", characteristic.description, data)
+    logger.info("%s: %r", characteristic.description, data)
 
 
-async def scan_main():
+async def main():
     # print("scanning for 5 seconds, please wait...")
 
     disconnected_event = asyncio.Event()
@@ -65,10 +65,10 @@ async def scan_main():
         device_filter, timeout=30, detection_callback=detection_callback
     )
     if device is None:
-        logger.warning("could not find device")
-        return
+        logger.error("could not find device")
+        raise RuntimeError("could not find device")
     else:
-        logger.warning("Found device %r", device)
+        logger.info("Found device %r", device)
 
     # async with BleakClient(
     #     device,
@@ -99,19 +99,18 @@ async def scan_main():
                 TimeoutError,
                 TypeError,
             ) as e:
-                raise e  # debug
+                logger.exception(e)
                 if not client.is_connected:
                     raise RuntimeError
                 if time.time() - time_start < 10:
                     # traceback.print_exception(e)
                     pass
-            finally:
-                if service_collection:
-                    break
 
                 if time.time() - time_start > 10:
                     raise e
-
+            finally:
+                if service_collection:
+                    break
                 time.sleep(2)
 
     except (
@@ -124,11 +123,11 @@ async def scan_main():
         if N > 0:
             await client.disconnect()
             time.sleep(2)
-            traceback.print_exception(e)
+            logger.exception(e)
         else:
             raise e
 
-    logger.warning("Connected %s, %r", client.is_connected, client)
+    logger.info("Connected %s, %r", client.is_connected, client)
 
     # N = 10
     # while True:
@@ -153,7 +152,7 @@ async def scan_main():
         print("characteristics:")
         pprint.pprint(service_collection.characteristics)
     except UnboundLocalError as e:
-        traceback.print_exception(e)
+        logger.exception(e)
         # TODO why even get here with service_collection not defined
         breakpoint()
 
@@ -186,9 +185,9 @@ async def scan_main():
     for idx, characteristic in enumerate(notify_characteristics):
         try:
             await client.start_notify(characteristic, notification_handler)
-            print(f"{idx}/{len(notify_characteristics)-1} {characteristic}")
+            logger.info(f"{idx}/{len(notify_characteristics)-1} {characteristic}")
         except Exception as e:
-            print(f"{idx}/{len(notify_characteristics)-1} notfiy: {e}")
+            logger.exception(f"{idx}/{len(notify_characteristics)-1} notify: {e}")
 
     # # read descriptors
     # for key, descriptor in service_collection.descriptors.items():
@@ -267,10 +266,10 @@ async def scan_main():
     ]
     await write_list(lumix_sync_write)
 
-    print("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    logger.error("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     # TODO device disconnects here after a few seconds, probably sending wrong values
     await asyncio.sleep(30)
-    print("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    logger.error("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     # again lumix_sync_attribute_no_found_reads
     lumix_sync_reads = [
         0x007A,
@@ -381,4 +380,4 @@ async def scan_main():
 
 
 if __name__ == "__main__":
-    asyncio.run(scan_main())
+    asyncio.run(main())

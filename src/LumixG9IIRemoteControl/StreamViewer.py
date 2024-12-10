@@ -9,13 +9,9 @@ import traceback
 import zmq
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from LumixG9IIRemoteControl.StreamReceiver import asyncio_main_thread_function
-
+from .configure_logging import logger
 from .helpers import get_local_ip, get_waiting_for_stream_image
-
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel("DEBUG")
+from .StreamReceiver import asyncio_main_thread_function
 
 
 class StreamViewerWidget(tk.Frame):
@@ -65,14 +61,13 @@ class StreamViewerWidget(tk.Frame):
         try:
             self._zmq_socket.send_pyobj(obj, zmq.NOBLOCK)
         except zmq.error.Again as e:
-            pass
+            logger.info("ZMQ Error %s", e, exc_info=True)
 
     def _zmq_consumer_function(self):
         while True:
             try:
                 event = self._zmq_socket.recv_pyobj()
                 logger.info("%s %s", event, event["data"]["cammode"])
-                print(dict(self.shutter_button))
                 if event["type"] == "state_dict":
                     if event["data"]["cammode"] == "play":
                         if self.shutter_button["state"] == tk.NORMAL:
@@ -80,7 +75,7 @@ class StreamViewerWidget(tk.Frame):
                     else:
                         self.shutter_button["state"] = tk.NORMAL
             except Exception as e:
-                logger.error(traceback.format_exception(e))
+                logger.exception(e)
 
     def _capture_event(self):
         self._send_pyobj({"capture": "start"})

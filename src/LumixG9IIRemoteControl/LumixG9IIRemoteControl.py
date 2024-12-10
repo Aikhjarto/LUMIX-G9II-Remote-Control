@@ -9,7 +9,7 @@ import traceback
 import urllib.parse
 import urllib.response
 import xml.etree.ElementTree
-from typing import Dict, List, Literal, Tuple, Union, get_type_hints
+from typing import Dict, List, Literal, Tuple, Union, Unpack, get_type_hints
 
 import defusedxml.ElementTree
 import requests
@@ -21,18 +21,16 @@ from didl_lite import didl_lite
 from LumixG9IIRemoteControl.helpers import get_local_ip
 from LumixG9IIRemoteControl.http_event_consumer import HTTPRequestHandler, Server
 
+from .configure_logging import logger
 from .types import (
     CamCGISettingDict,
     CamCGISettingKeys,
     CameraContentItem,
     CameraContentItemResource,
+    CameraRequestFilterDict,
     FocusSteps,
     SetSettingKeys,
 )
-
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel("INFO")
 
 
 def find_lumix_camera_via_sspd(
@@ -320,6 +318,8 @@ class LumixG9IIRemoteControl:
         self._http_server: Server = None
         self._event_thread: threading.Thread = None
 
+        self._cds_query_counter = 0
+
         self._zmq_context = zmq.Context()
         self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
         self._zmq_socket.connect("tcp://localhost:5556")
@@ -366,7 +366,7 @@ class LumixG9IIRemoteControl:
                         self.lcd_on()
                         self.send_touch_drag(value, x, y)
             except Exception as e:
-                logger.error(traceback.format_exception(e))
+                logger.exception(e)
 
     def __str__(self):
         try:
@@ -395,16 +395,16 @@ class LumixG9IIRemoteControl:
             return func(*args, **kwargs)
 
         return _decorated
-    
+
     def _requires_not_busy(func):
         def _decorated(self, *args, **kwargs):
             if self._cam_not_busy.isSet():
                 return func(self, *args, **kwargs)
             else:
-                logger.error('Cam is busy, ignoring command.')
-            
+                logger.error("Cam is busy, ignoring command.")
+
         return _decorated
-            
+
     def _requires_host(func):
         def _decorated(*args, **kwargs):
             if not args[0]._host:
@@ -546,6 +546,7 @@ class LumixG9IIRemoteControl:
                     )
                     self.get_state()
                 except Exception as e:
+                    logger.exception(e)
                     self.camera_state_dict = {
                         "cammode": "no connection",
                         "error": traceback.format_exception_only(e),
@@ -582,7 +583,7 @@ class LumixG9IIRemoteControl:
                 params[key] = d[f"cmd_{key}"]
             if key in d:
                 params[key] = d[key]
-        logger.info("cam_cgi_params %s", params)
+        logger.info("cam_cgi_params: %s", params)
         ret = requests.get(
             self._cam_cgi,
             headers=self._headers,
@@ -593,6 +594,8 @@ class LumixG9IIRemoteControl:
         # read back since some parameters are accepted by camera without an error,
         # but internally adjusted, e.g., apterture can be set outside the region, the
         # lens can handle.
+        # Note that some setsetting commands, e.g. drivemode, have different parameters
+        # for set and get.
         self._get_curmenu()
         if params["cmd_mode"] == "setsetting":
             logger.info(self.get_settings(settings_list=[params["cmd_type"]]))
@@ -1200,7 +1203,7 @@ class LumixG9IIRemoteControl:
             # off can be pinp or full
             # TODO check values and cache them
         except ValueError as e:
-            traceback.print_exception(e)
+            logger.exception(e)
             logger.error(f"{value} is not in ['current_auto', 'pinp', 'full', 'off']")
 
     @_requires_connected
@@ -1260,7 +1263,9 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "get_content_info"},
         )
-        et: xml.etree.ElementTree.ElementTree = self._parse_return_value_from_camera(ret)
+        et: xml.etree.ElementTree.ElementTree = self._parse_return_value_from_camera(
+            ret
+        )
         d = {}
         for item in et:
             if item.tag != "result":
@@ -1272,7 +1277,9 @@ class LumixG9IIRemoteControl:
     ) -> Union[xml.etree.ElementTree.Element, List[str]]:
         self._assert_ret_ok(ret)
 
-        assert ret.headers["Server"] == "Panasonic", "header 'Server' is not 'Panasonic', maybe connected to wrong device"
+        assert (
+            ret.headers["Server"] == "Panasonic"
+        ), "header 'Server' is not 'Panasonic', maybe connected to wrong device"
 
         if (
             ret.headers["Content-Type"] == "text/xml"
@@ -1427,7 +1434,9 @@ class LumixG9IIRemoteControl:
             headers=self._headers,
             params={"mode": "getsetting", "type": setting},
         )
-        res: xml.etree.ElementTree.Element = self._parse_return_value_from_camera(ret)[1]
+        res: xml.etree.ElementTree.Element = self._parse_return_value_from_camera(ret)[
+            1
+        ]
         data = {}
         if len(res.attrib) == 1:
             data["type"] = list(res.attrib.keys())[0]
@@ -1504,12 +1513,11 @@ class LumixG9IIRemoteControl:
 
     def _assert_ret_ok(self, ret: requests.Response):
         if not ret.ok:
-            logger.error('Request %s failed with %s',
-                         ret.url, ret.reason)
+            logger.error("Request %s failed with %s", ret.url, ret.reason)
             e = RuntimeError(f"Request {ret.url}, failed with {ret.reason}")
             self._zmq_socket.send_pyobj({"type": "exception", "data": e}, zmq.NOBLOCK)
             raise e
-        
+
     @_requires_connected
     def raw_img_send_enable(self, status: bool):
         if status:
@@ -1575,14 +1583,14 @@ class LumixG9IIRemoteControl:
         logger.info("Got event notification from camera %s", data)
         self._publish_state_change("camera_event", data)
         if data[0] == "X_Panasonic_Cam_Sync":
-            if data[1] == 'busy':
+            if data[1] == "busy":
                 self._cam_not_busy.clear()
             else:
                 self._cam_not_busy.set()
 
-            if data[1].startswith('lens_'):
+            if data[1].startswith("lens_"):
                 self.get_lens()
-            if data[1] == 'update':
+            if data[1] == "update":
                 self._get_curmenu()
                 self.get_settings()
         # TODO: make a more meaningful callback that calls get_lens on lens changes
@@ -1603,7 +1611,8 @@ class LumixG9IIRemoteControl:
 
     @_requires_connected
     def query_all_items_on_sdcard(
-        self, **kwargs
+        self,
+        **kwargs: Unpack[CameraRequestFilterDict],
     ) -> List[Union[didl_lite.Item, didl_lite.Container]]:
 
         logger.info("query_all_items_on_sdcard: %s", kwargs)
@@ -1629,6 +1638,11 @@ class LumixG9IIRemoteControl:
                 TotalMatches,
                 kwargs,
             )
+
+            if self.store_queries:
+                log_key = f"{kwargs.get('object_id_str')}_{i}"
+            else:
+                log_key = None
             (
                 soap_xml,
                 didl_lite_xml,
@@ -1636,12 +1650,15 @@ class LumixG9IIRemoteControl:
                 TotalMatches,
                 NumberReturned,
             ) = self.query_items_on_sdcard(
-                StartingIndex=i * n_bulk, RequestedCount=n_bulk, **kwargs
+                StartingIndex=i * n_bulk,
+                RequestedCount=n_bulk,
+                log_key=log_key,
+                **kwargs,
             )
-            if self.store_queries:
+
+            if log_key is not None:
                 xml.etree.ElementTree.indent(soap_xml)
-                key = f"{kwargs.get('object_id_str')}_{i}"
-                with open(f"soap_{key}.xml", "wb") as f:
+                with open(f"soap_{log_key}.xml", "wb") as f:
                     f.write(
                         xml.etree.ElementTree.tostring(
                             soap_xml, **self._xml_tostring_kwargs
@@ -1649,7 +1666,7 @@ class LumixG9IIRemoteControl:
                     )
 
                 xml.etree.ElementTree.indent(didl_lite_xml)
-                with open(f"didl_{key}.xml", "wb") as f:
+                with open(f"didl_{log_key}.xml", "wb") as f:
                     f.write(
                         xml.etree.ElementTree.tostring(
                             didl_lite_xml, **self._xml_tostring_kwargs
@@ -1672,7 +1689,12 @@ class LumixG9IIRemoteControl:
         return item_list
 
     @_requires_connected
-    def query_items_on_sdcard(self, auto_set_play_mode=True, **kwargs):
+    def query_items_on_sdcard(
+        self,
+        auto_set_play_mode=True,
+        log_key=None,
+        **kwargs: Unpack[CameraRequestFilterDict],
+    ):
         """
         Notes
         -----
@@ -1687,7 +1709,7 @@ class LumixG9IIRemoteControl:
         url, xml_string, headers = prepare_cds_query(self._host, **kwargs)
 
         if self.store_queries:
-            with open("cds_query.xml", "wb") as f:
+            with open(f"cds_query_{log_key}.xml", "wb") as f:
                 f.write(xml_string)
 
         ret = requests.post(url=url, headers=headers, data=xml_string)
@@ -1742,64 +1764,3 @@ class LumixG9IIRemoteControl:
             with open(string, "b") as f:
                 f.write(ret.raw)
         return ret.headers, ret.raw
-
-
-def add_general_options_to_parser(parser: argparse.ArgumentParser):
-    parser.add_argument("--hostname", type=str, help="Hostname or IP-Adress of camera")
-    parser.add_argument("--auto-connect", action="store_true")
-
-
-def setup_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    add_general_options_to_parser(parser)
-    parser.add_argument("--use-full-IPython", action="store_true", default=False)
-    return parser
-
-
-if __name__ == "__main__":
-
-    args = setup_parser().parse_args()
-
-    header = """LumixG9IIRemoteControl: use g9ii<tab> to see your options, e.g.
-        g9ii.print_set_setting_commands()
-        g9ii.print_current_settings()
-        g9ii.set_setting('exposure', -3)
-        g9ii.oneshot_af()
-        g9ii.capture()
-        use '?' instead of brackets to print the helpstring, e.g. g9ii.start_stream?
-        """
-
-    if args.use_full_IPython:
-        import IPython
-        from traitlets.config import Config
-
-        c = Config()
-        c.InteractiveShellApp.exec_lines = [
-            "import LumixG9IIRemoteControl.LumixG9IIRemoteControl",
-            f"g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host={args.hostname})",
-        ]
-        c.InteractiveShellApp.hide_initial_ns = False
-
-        c.InteractiveShell.banner2 = header
-        IPython.start_ipython(argv=[], local_ns=locals(), config=c)
-
-    else:
-        import IPython
-
-        g9ii = LumixG9IIRemoteControl(
-            auto_connect=args.auto_connect, host=args.hostname
-        )
-        IPython.embed(header=header)
-    # try:
-    #     g9ii.connect(host=args.hostname)
-    # except RuntimeError as e:
-    #     traceback.print_exception(e)
-
-    # g9ii.start_stream()
-    # g9ii.set_playmode()
-    # g9ii.set_recmode()
-
-    # g9ii._state_thread.join()
-    # g9ii = LumixG9IIRemoteControl()
-    # g9ii._allmenu_tree = defusedxml.ElementTree.parse("../../Dumps/allmenu.xml")
-    # g9ii.set_local_language()

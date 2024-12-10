@@ -25,10 +25,10 @@ from LumixG9IIRemoteControl.LumixG9IIRemoteControl import (
     didl_object_list_to_camera_content_list,
     find_lumix_camera_via_sspd,
 )
-from LumixG9IIRemoteControl.QtGUI.NoRaise import NoRaiseMixin
 
-logging.basicConfig()
-logger = logging.getLogger()
+from ..configure_logging import logger
+from ..types import CameraRequestFilterDict
+from .NoRaise import NoRaiseMixin
 
 
 class ZMQReceiver(QtCore.QObject):
@@ -46,9 +46,6 @@ class ZMQReceiver(QtCore.QObject):
             self.dataChanged.emit(obj)
 
 
-semapho = QtCore.QSemaphore()
-
-
 class CameraWidget(QWidget, NoRaiseMixin):
 
     cameraStateChanged = Signal(dict)
@@ -61,11 +58,14 @@ class CameraWidget(QWidget, NoRaiseMixin):
     cameraModeChanged = Signal(str)
     cameraConnectionStateChanged = Signal(str)
     cameraSettingsChanged = Signal(list)
+    didlUpdate = Signal(list)
     lensChanged = Signal(dict)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        self.semaphor = QtCore.QSemaphore()
 
         find_camera_button = QPushButton("Find camera")
         connect_button = QPushButton("Connect")
@@ -102,9 +102,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
             # host='mlbel',
             # auto_connect=True
         )
-        # g9ii._allmenu_tree = defusedxml.ElementTree.parse("../Dumps/allmenu.xml")
-        # g9ii._curmenu_tree = defusedxml.ElementTree.parse("../Dumps/curmenu.xml")
-        # g9ii.set_local_language()
 
         self._lens_dict_cache = {}
         zmq_receiver = ZMQReceiver(self)
@@ -115,7 +112,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         self._old_cammode = None
 
-        # livestream_widget.setEnabled(False)
         # self._apply_allmenu_xml(defusedxml.ElementTree.parse("../Dumps/allmenu.xml"))
         # self._apply_curmenu_xml(defusedxml.ElementTree.parse("../Dumps/curmenu.xml"))
 
@@ -124,14 +120,12 @@ class CameraWidget(QWidget, NoRaiseMixin):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                logger.error(traceback.format_exception(e))
+                logger.exception(e)
                 args[0].error_message.critical(
                     args[0],
                     "G9II Error",
                     "\n".join(traceback.format_exception_only(e)),
                 )
-
-                traceback.print_exception(e)
 
         return no_raise
 
@@ -146,7 +140,8 @@ class CameraWidget(QWidget, NoRaiseMixin):
             try:
                 self.g9ii.connect(host=host_name)
             except Exception as e:
-                logger.error("\n".join(traceback.format_exception(e)))
+                logger.exception(e)
+
                 self.error_message.critical(
                     self,
                     "G9II Error",
@@ -173,7 +168,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
         try:
             camera_hostname = find_lumix_camera_via_sspd()
         except RuntimeError as e:
-            logger.error(traceback.format_exception(e))
+            logger.exception(e)
             self.camera_hostname.setPlaceholderText("no camera found")
             self.camera_hostname.setText(None)
             self.error_message.critical(
@@ -229,7 +224,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
                 logger.error("Unknown message, %s", event)
 
         except Exception as e:
-            logger.error("%s", traceback.format_exception(e))
+            logger.exception(e)
 
     @_no_raise
     def _play_rec_toggle(self):
@@ -263,7 +258,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
         # n_iterations = math.ceil(content_info_dict["total_content_number"] / n_bulk)
         TotalMatches = float("inf")
         TotalNumberReturned = 0
-        item_list = []
         i = 0
         while TotalNumberReturned < TotalMatches:
             logger.info("Item query %d/%s", TotalNumberReturned, TotalMatches)
@@ -274,20 +268,26 @@ class CameraWidget(QWidget, NoRaiseMixin):
                 TotalMatches,
                 NumberReturned,
                 container_id,
-            ) = self.query_items_on_sdcard(
+            ) = self.g9ii.query_items_on_sdcard(
                 StartingIndex=i * n_bulk, RequestedCount=n_bulk, **kwargs
             )
             i = i + 1
 
             TotalNumberReturned = TotalNumberReturned + NumberReturned
-            item_list.extend(didl_object_list)
-        return item_list
+
+            self.didlUpdate.emit(didl_object_list)
+
+            # self.semaphor.acquire(15)
+            # dieTime=QtCore.QTime.currentTime().addSecs(1)
+
+            # while (QtCore.QTime.currentTime() < dieTime):
+            #     QCoreApplication.processEvents(QEventLoop::AllEvents, 100);
 
     @_no_raise
-    def query_all_items(self, d):
-        logger.info("query_all_items: %s", d)
+    def query_all_items(self, filter_dict: CameraRequestFilterDict):
+        logger.info("query_all_items: %s", filter_dict)
 
-        data = self.g9ii.query_all_items_on_sdcard(**d)
+        data = self.g9ii.query_all_items_on_sdcard(**filter_dict)
         # data = self.g9ii.query_items_on_sdcard(*args, **kwargs)
         data2 = didl_object_list_to_camera_content_list(data)
         self.cameraNewItemsList.emit(data2)

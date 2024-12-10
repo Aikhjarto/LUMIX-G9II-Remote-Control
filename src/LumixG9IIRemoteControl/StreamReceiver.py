@@ -9,11 +9,8 @@ from typing import Any, Callable, Tuple
 
 from PIL import Image
 
+from .configure_logging import logger
 from .helpers import get_local_ip
-
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel("INFO")
 
 
 class ClientProtocol(asyncio.DatagramProtocol):
@@ -41,13 +38,13 @@ class ClientProtocol(asyncio.DatagramProtocol):
                 self.callback(datetime.datetime.now(), data[start_idx:])
 
             except Exception as e:
-                traceback.print_exception(e)
+                logger.exception(e, exc_info=True)
 
     def error_received(self, exc):
-        print("Error received:", exc)
+        logger.error("Error received: %s", exc)
 
     def connection_lost(self, exc):
-        print("Connection closed")
+        logger.error("Connection lost")
         self.on_con_lost.set_result(True)
 
 
@@ -75,7 +72,7 @@ def asyncio_main_thread_function(*args, **kwargs):
 
 def dummy_consumer(timestamp: datetime.datetime, image_data: bytes):
     image = Image.open(io.BytesIO(image_data))
-    print(f"{timestamp.isoformat()}: {image.size}")
+    logger.info(f"{timestamp.isoformat()}: {image.size}")
 
 
 def write_jpgs_consumer(timestamp: datetime.datetime, image_data: bytes):

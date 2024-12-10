@@ -31,6 +31,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ..configure_logging import logger
 from ..types import CameraContentItem, CameraFileformatIdentfiers
 
 
@@ -41,10 +42,6 @@ class QReadOnlyCheckBox(QCheckBox):
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         event.ignore()
-
-
-logging.basicConfig()
-logger = logging.getLogger()
 
 
 class CameraPlayModeConnection(QObject):
@@ -247,7 +244,8 @@ class PlayModeWidget(QWidget):
     def _thumbnail_request_failed_callback(self, error: QNetworkReply.NetworkError):
         logger.error("Thumbnail request failed with error %s", error)
 
-    def _thumbnail_request_finished_callback(self, reply: QNetworkReply):
+    def _thumbnail_request_finished_callback(self):
+        reply: QNetworkReply = self.sender()
         if not reply.isFinished():
             logger.error("reply {reply} is not finished!")
             return
@@ -437,7 +435,7 @@ class PlayModeTableWidget(QTableWidget):
         return d
 
     def _update_downloaded_checkbox(self):
-        for row, filename_map in self._downloaded_checkbox_map.items():
+        for filename_map in self._downloaded_checkbox_map.values():
             for filename, checkbox in filename_map.items():
                 checkbox.setChecked(
                     os.path.isfile(os.path.join(self._local_folder, filename))

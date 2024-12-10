@@ -32,9 +32,7 @@ from qtpy.QtWidgets import (
 
 import LumixG9IIRemoteControl.LumixG9IIRemoteControl
 
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel("INFO")
+from ..configure_logging import logger
 
 
 class RecordSettingsWidget(QTabWidget):
@@ -74,7 +72,7 @@ class RecordSettingsWidget(QTabWidget):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                traceback.print_exception(e)
+                logger.exception(e)
 
         return no_raise
 
@@ -158,7 +156,9 @@ class RecordSettingsWidget(QTabWidget):
 
                 value = item.attrib.get("value")
                 if value:
-                    if isinstance(instance, QAbstractSlider) or isinstance(instance, QAbstractSpinBox):
+                    if isinstance(instance, QAbstractSlider) or isinstance(
+                        instance, QAbstractSpinBox
+                    ):
                         instance.blockSignals(True)
                         instance.setValue(int(value))
                         instance.blockSignals(False)
@@ -212,7 +212,9 @@ class RecordSettingsWidget(QTabWidget):
                             instance.setCurrentIndex(idx)
                             instance.blockSignals(False)
                     else:
-                        logger.error(f"aNotImplementedError({(instance, item.attrib)}")
+                        logger.error(
+                            f"Curmenu item NotImplementedError({(instance, item.attrib)}"
+                        )
 
             s = set(item.attrib.keys())
             s.remove("id")
@@ -220,7 +222,7 @@ class RecordSettingsWidget(QTabWidget):
             if "value" in s:
                 s.remove("value")
             if len(s) > 0:  # "option", "option2", or "active" in item.attrib:
-                logger.error("handle attribs %s", item.attrib)
+                logger.error("handle curmenu attribs %s", item.attrib)
 
     @Slot(xml.etree.ElementTree.ElementTree)
     def apply_allmenu_xml(self, allmenu_tree: xml.etree.ElementTree.ElementTree):
@@ -259,14 +261,21 @@ class RecordSettingsWidget(QTabWidget):
         combo_box = QComboBox()
         self._id_map[item.attrib["id"]] = combo_box
         for idx, grouped_item in enumerate(grouped_items):
-            if 'min_val' in grouped_item.attrib or 'max_val' in grouped_item.attrib or 'step_val' in grouped_item.attrib:
-                logger.error("Notimplemented: %s appeared in select group %s",
-                             grouped_item.attrib, item.attrib)
+            if (
+                "min_val" in grouped_item.attrib
+                or "max_val" in grouped_item.attrib
+                or "step_val" in grouped_item.attrib
+            ):
+                logger.error(
+                    "Notimplemented: %s appeared in select group %s",
+                    grouped_item.attrib,
+                    item.attrib,
+                )
                 continue
 
             user_data = grouped_item.attrib["cmd_value"]
             if "cmd_value2" in grouped_item.attrib:
-                if grouped_item.attrib['cmd_type'] == 'drivemode':
+                if grouped_item.attrib["cmd_type"] == "drivemode":
                     user_data = grouped_item.attrib["cmd_value2"]
                 else:
                     user_data = user_data + "," + grouped_item.attrib["cmd_value2"]
@@ -458,7 +467,7 @@ class RecordSettingsWidget(QTabWidget):
                 widget = self._setsetting_map[item["type"]]
                 if isinstance(widget, QComboBox):
                     user_data = item["value"]
-                    if "value2" in item and item['type'] != 'drivemode':
+                    if "value2" in item and item["type"] != "drivemode":
                         user_data = user_data + "," + item["value2"]
 
                     index = widget.findData(user_data)
@@ -501,7 +510,7 @@ class RecordSettingsWidget(QTabWidget):
         try:
             self.g9ii.run_camcgi_from_dict(val[i])
         except RuntimeError as e:
-            traceback.print_exception(e)
+            logger.exception(e)
 
     @_no_raise
     def _title_id(self, d: dict) -> str:
@@ -518,7 +527,6 @@ class RecordSettingsWidget(QTabWidget):
             x["cmd_value"] = lineedit.text()
         if x.get("cmd_value2") == "__value__":
             x["cmd_value2"] = lineedit.text()
-        print("cam_cgi_dict", x)
         self.g9ii.run_camcgi_from_dict(x)
 
     @_no_raise
@@ -542,5 +550,4 @@ class RecordSettingsWidget(QTabWidget):
             x["cmd_value"] = value
         if x.get("cmd_value2") == "__value__":
             x["cmd_value2"] = value
-        print("cam_cgi_dict", x)
         self.g9ii.run_camcgi_from_dict(x)

@@ -1,4 +1,4 @@
-from typing import Dict, Literal, TypedDict, Union
+from typing import Dict, Literal, Sequence, TypedDict, Union
 
 from didl_lite import didl_lite
 
@@ -50,5 +50,15 @@ CameraContentItem = TypedDict(
         "resources": CameraContentItemResource,
         "didl_object": Union[didl_lite.ImageItem, didl_lite.Movie, didl_lite.Container],
         "index": int,
+    },
+)
+
+CameraRequestFilterDict = TypedDict(
+    "CameraRequestFilterDict",
+    {
+        "age_in_days": int,
+        "rating_list": Sequence[Literal[0, 1, 2, 3, 4, 5]],
+        "object_id_str": str,
+        "recgroup_type_string": str,
     },
 )

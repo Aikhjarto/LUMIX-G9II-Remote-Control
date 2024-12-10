@@ -8,9 +8,7 @@ from typing import Dict
 
 import defusedxml.ElementTree
 
-logging.basicConfig()
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+from .configure_logging import logger
 
 
 class Server(socketserver.ThreadingTCPServer):

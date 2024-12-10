@@ -11,10 +11,8 @@ from qtpy import QtCore, QtGui, QtNetwork
 from qtpy.QtCore import QTimer, Signal, Slot
 from qtpy.QtWidgets import QApplication, QLabel
 
+from ..configure_logging import logger
 from ..helpers import get_waiting_for_stream_image
-
-logging.basicConfig()
-logger = logging.getLogger()
 
 
 class LiveStreamWidget(QLabel):
