@@ -14,6 +14,7 @@ isort > 5.0.0
 python-didl-lite
 IPython
 traitlets
+typing_extensions
 pyzmq
 PySide6
 qtpy
