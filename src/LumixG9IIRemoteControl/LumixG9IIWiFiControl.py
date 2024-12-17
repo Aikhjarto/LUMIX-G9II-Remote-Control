@@ -21,8 +21,7 @@ from didl_lite import didl_lite
 from LumixG9IIRemoteControl.helpers import get_local_ip
 from LumixG9IIRemoteControl.http_event_consumer import HTTPRequestHandler, Server
 
-from .configure_logging import logger
-from .types import (
+from .camera_types import (
     CamCGISettingDict,
     CamCGISettingKeys,
     CameraContentItem,
@@ -31,6 +30,7 @@ from .types import (
     FocusSteps,
     SetSettingKeys,
 )
+from .configure_logging import logger
 
 
 def find_lumix_camera_via_sspd(
@@ -250,7 +250,7 @@ def didl_object_list_to_camera_content_list(
     return lst
 
 
-class LumixG9IIRemoteControl:
+class LumixG9IIWiFiControl:
 
     def __init__(
         self,

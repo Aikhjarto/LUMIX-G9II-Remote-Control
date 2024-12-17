@@ -7,7 +7,7 @@ black
 blacken-docs
 flake8
 pyproject-flake8 # for support of flake8 config pyproject.toml via pyflak8 cli
-flake8-pyproject # for support of flake8 config pyproject.toml via  vscode
+flake8-pyproject # for support of flake8 config pyproject.toml via vscode
 flake8-bugbear
 pylint
 isort > 5.0.0

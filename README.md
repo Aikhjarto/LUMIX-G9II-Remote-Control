@@ -48,33 +48,43 @@ adb shell cmd bluetooth_manager disable
 adb shell cmd bluetooth_manager enable
 ```
 
+### Get Bluetooth logs via adb bugreport
 ```sh
-adb bugreport zipFilename
-```
-
-
-```sh
-unzip zipFileName "FS/data/misc/bluetooth/*"
+SUFFIX=$(date -Is)
+adb bugreport "bugreport_$SUFFIX"
+unzip "bugreport_$SUFFIX" "FS/data/misc/bluetooth/*"
 ```
 Open `*.cfa` file with Wireshark and use `btatt` as display filter
 
+Generating the bugreport will be slow.
 
 ### Bluetooth dump using adb dumpsys
-https://source.android.com/docs/core/connect/bluetooth/verifying_debugging?hl=de
+Get `btsnooz.py` from https://source.android.com/docs/core/connect/bluetooth/verifying_debugging?hl=de
 
+Download log and convert it to a format, Wireshark understands and open it with display filter set to btatt
 ```sh
-adb shell dumpsys bluetooth_manager > btsnoop.txt
+SUFFIX=$(date -Is)
+adb shell dumpsys bluetooth_manager > "btsnoop_$SUFFIX.txt"
+python3 btsnooz.py "btsnoop_$SUFFIX.txt" > "btsnoop_$SUFFIX.log"
+wireshark -Y btatt "btsnoop_$SUFFIX.log"
 ```
-Convert to a format, Wireshark understands
-```sh
-./btsnooz.py btsnoop.txt > btsnoop.log
-```
+Depeding on the commuincation content, wireshark will report [Packet size limited during capture: BT ATT truncated].
+https://issuetracker.google.com/issues/226155463?pli=1
 
-Open `btsnoop.log` file with Wireshark and use `btatt` as display filter
-`wireshark -Y btatt btsnoop.log `
-
-### Using Logcat from Android Studio
+### Using Logcat from Android Studio for Live View
 [Android Studio](https://developer.android.com/studio)
+[Logcat](https://developer.android.com/studio/debug/logcat)
+And set
+ Log Tag (regex): BT|luetooth|bt|Bt
+ Log Level: Debug
+
+```sh
+adb logcat | grep -i -e att -e bt_ -e bluetooth > logcat/logcat_bluetooth_gatt.txt
+```
+
+### Wireshark HCI snoop
+Start wireshark while mobile is connected in debug mode and select 
+Android Bluteooth Btsnoop as caputer adapter
 
 ### bluetoothctl
 ```sh

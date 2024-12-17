@@ -31,8 +31,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ..camera_types import CameraContentItem, CameraFileformatIdentfiers
 from ..configure_logging import logger
-from ..types import CameraContentItem, CameraFileformatIdentfiers
 
 
 class QReadOnlyCheckBox(QCheckBox):

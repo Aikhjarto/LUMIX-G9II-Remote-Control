@@ -30,7 +30,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-import LumixG9IIRemoteControl.LumixG9IIRemoteControl
+import LumixG9IIRemoteControl.LumixG9IIWiFiControl
 
 from ..configure_logging import logger
 
@@ -41,13 +41,13 @@ class RecordSettingsWidget(QTabWidget):
 
     def __init__(
         self,
-        g9ii: LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl,
+        g9ii: LumixG9IIRemoteControl.LumixG9IIWiFiControl.LumixG9IIWiFiControl,
         *args,
         **kwargs,
     ):
-        self.g9ii: (
-            LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl
-        ) = g9ii
+        self.g9ii: LumixG9IIRemoteControl.LumixG9IIWiFiControl.LumixG9IIWiFiControl = (
+            g9ii
+        )
         self._allmenu_parent_map = {}
         self._id_map: Dict[
             str,

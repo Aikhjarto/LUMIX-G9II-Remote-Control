@@ -1,19 +1,45 @@
 import asyncio
 import logging
+import os
 import pprint
+import struct
 import time
 import traceback
 from typing import Dict, List, Tuple
 
 import bleak
 import bleak.backends
+import bleak.backends.service
 from bleak import BleakClient, BleakScanner, BLEDevice
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 from typing_extensions import Buffer
 
+from LumixG9IIRemoteControl.LumixG9IIBluetoothControl import hash_lumix_sync
+
+# https://www.bluetooth.com/specifications/assigned-numbers/
+
+
 logging.basicConfig()
+
+formatter = logging.Formatter(
+    fmt="%(asctime)s.%(msecs)03d %(levelname)-8s :: %(message)s",
+    datefmt="%Y-%m-%d,%H:%M:%S",
+)
+
+logfilename = f"btlog_{int(time.time())}.log"
+if os.path.islink("btlog.log"):
+    os.unlink("btlog.log")
+os.symlink(logfilename, "btlog.log")
+
+fh = logging.FileHandler(logfilename)
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+
+
 logger = logging.getLogger()
-logger.setLevel("DEBUG")
+logger.addHandler(fh)
+logger.setLevel(logging.INFO)
+
 # uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
 
 
@@ -80,17 +106,24 @@ async def main():
         disconnected_callback=disconnected_callback,
         timeout=20,
     )
-    # pprint.pprint(dir(client))
-    # pprint.pprint(dir(client._backend))
+    # logger.info('%s', pprint.pformat(dir(client))
+    # logger.info('%s', pprint.pformat(dir(client._backend))
     # breakpoint()
     N = 10
-    try:
-        N = N - 1
+    service_collection: bleak.backends.service.BleakGATTServiceCollection = None
+    while not service_collection:
+        await client.disconnect()
         await client.connect()
+        logger.info("Connected %s, %r", client.is_connected, client)
 
         # wait for service collection to be populated
         time_start = time.time()
-        while True:
+        while (
+            client.is_connected
+            and not service_collection
+            and time.time() - time_start < 20
+        ):
+            time.sleep(1)
             try:
                 service_collection: bleak.BleakGATTServiceCollection = client.services
             except (
@@ -102,30 +135,6 @@ async def main():
                 logger.exception(e)
                 if not client.is_connected:
                     raise RuntimeError
-                if time.time() - time_start < 10:
-                    # traceback.print_exception(e)
-                    pass
-
-                if time.time() - time_start > 10:
-                    raise e
-            finally:
-                if service_collection:
-                    break
-                time.sleep(2)
-
-    except (
-        bleak.exc.BleakError,
-        TimeoutError,
-        RuntimeError,
-        asyncio.CancelledError,
-    ) as e:
-        # raise e  # debug
-        if N > 0:
-            await client.disconnect()
-            time.sleep(2)
-            logger.exception(e)
-        else:
-            raise e
 
     logger.info("Connected %s, %r", client.is_connected, client)
 
@@ -147,33 +156,72 @@ async def main():
     # logger.warning("Got Services")
 
     try:
-        print("services:")
-        pprint.pprint(service_collection.services)
-        print("characteristics:")
-        pprint.pprint(service_collection.characteristics)
+        logger.info("services: %s", pprint.pformat(service_collection.services))
+        logger.info(
+            "characteristics: %s", pprint.pformat(service_collection.characteristics)
+        )
     except UnboundLocalError as e:
         logger.exception(e)
         # TODO why even get here with service_collection not defined
-        breakpoint()
+        # breakpoint()
 
     # print("descriptors:")
-    # pprint.pprint(service_collection.descriptors)
+    # logger.info('%s', pprint.pformat(service_collection.descriptors)
+
+    for service in service_collection.services.values():
+        service: bleak.backends.service.BleakGATTService
+
+        logger.info(
+            "Service %s",
+            pprint.pformat(
+                {
+                    "handle_int": service.handle,
+                    "handle_hex": f"0x{service.handle:04x}",
+                    "uuid": service.uuid,
+                    "description": service.description,
+                }
+            ),
+        )
+
+        for characteristic in service.characteristics:
+            # for some reason, service.characteristics is empty
+            # thus loop over service_collection.characteristics later
+            characteristic: bleak.BleakGATTCharacteristic
+            logger.info(
+                "Service %s: Characteristic %s",
+                pprint.pformat(
+                    {
+                        "handle_int": characteristic.handle,
+                        "handle_hex": f"0x{characteristic.handle:04x}",
+                        "descriptors": characteristic.descriptors,
+                        "description": characteristic.description,
+                        "service_uuid": characteristic.service_uuid,
+                        "uuid": characteristic.uuid,
+                        "properties": characteristic.properties,
+                    }
+                ),
+            )
 
     readable_characteristics = []
     notify_characteristics = []
+    writable_characteristics = []
+    indicate_characteristics = []
     for key, characteristic in service_collection.characteristics.items():
         characteristic: bleak.BleakGATTCharacteristic
-        # pprint.pprint(
-        #     {
-        #         "key": key,
-        #         "str": str(characteristic),
-        #         "descriptors": characteristic.descriptors,
-        #         "description": characteristic.description,
-        #         "service_uuid": characteristic.service_uuid,
-        #         "uuid": characteristic.uuid,
-        #         "properties": characteristic.properties,
-        #     }
-        # )
+        logger.info(
+            "Characteristic %s",
+            pprint.pformat(
+                {
+                    "handle_int": characteristic.handle,
+                    "handle_hex": f"0x{characteristic.handle:04x}",
+                    "descriptors": characteristic.descriptors,
+                    "description": characteristic.description,
+                    "service_uuid": characteristic.service_uuid,
+                    "uuid": characteristic.uuid,
+                    "properties": characteristic.properties,
+                }
+            ),
+        )
 
         if "read" in characteristic.properties:
             readable_characteristics.append(characteristic)
@@ -181,41 +229,65 @@ async def main():
         if "notify" in characteristic.properties:
             notify_characteristics.append(characteristic)
 
+        if "notify" in characteristic.properties:
+            writable_characteristics.append(characteristic)
+
+        if "indicate" in characteristic.properties:
+            indicate_characteristics.append(characteristic)
+
     # setup notifications
     for idx, characteristic in enumerate(notify_characteristics):
         try:
             await client.start_notify(characteristic, notification_handler)
-            logger.info(f"{idx}/{len(notify_characteristics)-1} {characteristic}")
+            logger.info(
+                f"Notification {idx}/{len(notify_characteristics)-1} started for {characteristic}"
+            )
         except Exception as e:
-            logger.exception(f"{idx}/{len(notify_characteristics)-1} notify: {e}")
+            logger.exception(
+                f"{idx}/{len(notify_characteristics)-1} notify: {e} for {characteristic}"
+            )
 
     # # read descriptors
-    # for key, descriptor in service_collection.descriptors.items():
-    #     pprint.pprint({'key': key,
-    #                    'uuid': descriptor.uuid,
-    #                    'handle': descriptor.handle,
-    #                    'description': descriptor.description,
-    #                    'characteristic_uuid': descriptor.characteristic_uuid,
-    #                    'characteristic_handle':descriptor.characteristic_handle,
-    #                    })
-    #     try:
-    #         ret = await client.read_gatt_descriptor(key)
-    #         print(f"{key} {descriptor} {ret}")
-    #     except Exception as e:
-    #         print(f"{key} {descriptor} {e}")
+    for key, descriptor in service_collection.descriptors.items():
+        d = {
+            "key": key,
+            "uuid": descriptor.uuid,
+            "handle_int": descriptor.handle,
+            "handle_hex": f"{descriptor.handle:04x}",
+            "description": descriptor.description,
+            "characteristic_uuid": descriptor.characteristic_uuid,
+            "characteristic_handle": descriptor.characteristic_handle,
+        }
+        try:
+            ret = await client.read_gatt_descriptor(key)
+            d["value"] = ret
+        except Exception as e:
+            logger.exception(e)
+
+        logger.info(
+            "Descriptor %s",
+            pprint.pformat(d),
+        )
+
+    # for idx, characteristic in enumerate(readable_characteristics):
+    #     ret = await client.read_gatt_char(characteristic.handle - 1)
+    #     print(f"{idx}/{len(readable_characteristics)}, {characteristic}: {ret}")
 
     async def read_list(lst: List[int]) -> Dict[int, bytearray]:
         d = dict()
         for i in lst:
             char = service_collection.characteristics[i - 1]
             d[i] = await client.read_gatt_char(char)
+            logger.info("Read %s", d)
         return d
 
     async def write_list(lst: List[Tuple[int, Buffer]]) -> Dict[int, bytearray]:
         d = dict()
         for i, data in lst:
             char = service_collection.characteristics[i - 1]
+            logger.info("Write %s %s", i, data)
             d[i] = await client.write_gatt_char(char, data, response=True)
+            logger.info("Write Response %s", d)
         return d
 
     lumix_sync_attribute_no_found_reads = [
@@ -251,31 +323,105 @@ async def main():
     ]
 
     # ret = await read_list(lumix_sync_attribute_no_found_reads)
-    # pprint.pprint(ret)
+    # logger.info('%s', pprint.pformat(ret)
 
     lumix_sync_reads = [
         0x002A,
     ]
-    # Note return value is always different, example read 0x22408d11
+    # Note return value is always different, example read 84bbfd60
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
+    ret_int = struct.unpack("I", ret[0x002A])[0]
+    logger.info(f"0x{ret_int:08x}")
+
+    value2c, value2e = hash_lumix_sync(ret[0x002A])
+    logger.info(
+        "Calculated value for 0x002C 0x" + "".join([f"{x:02x}" for x in value2c])
+    )
+    logger.info(
+        "Calculated value for 0x002E 0x" + "".join([f"{x:02x}" for x in value2e])
+    )
 
     lumix_sync_write = [
-        (0x002C, b"\x6B\x05\xC0"),
-        (0x002E, b"\x17\x10\xCB"),
+        (0x002C, value2c),
+        (0x002E, value2e),
     ]
     await write_list(lumix_sync_write)
 
-    logger.error("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    # TODO device disconnects here after a few seconds, probably sending wrong values
-    await asyncio.sleep(30)
-    logger.error("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    # maybe handle notification 0x0040 with value 1 comes here
+
+    # read camera name as null-terminated string
+    lumix_sync_reads = [
+        0x0036,
+    ]
+    ret = await read_list(lumix_sync_reads)
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
+
+    # lumix sync reads then 0x036 offset 22 to get buffer after string termination
+
+    # lumix sync reads 0x0038, which is concatenation of trice of content of 0x002a
+    lumix_sync_reads = [
+        0x0038,
+    ]
+
+    ret = await read_list(lumix_sync_reads)
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
+
+    # lumix sync reads 0x0038, at offsets 22,44, and 66
+
+    # It then writes continously (several times per second) 0x003e, with 16 bytes
+    # maybe keep-alive pattern or GPS data
+    # Excample value
+    # 23af8654_cfd2d11c_9df39508_99014100
+    # 37a38654_91d7d11c_f5ee9508_9e014100
+    # First byte (23) is incremented by one every 10-th cycle
+    # Fifth byte is incremented by small values every 10-th cycle
+    # 9-th byte is noisy
+    # 13-th byte is noisy
+
+    # Capture
+    # await client.write_gatt_char(0x0068 - 1, 0x02, response=True)
+    # await client.write_gatt_char(0x0068 - 1, 0x02, response=True)
+    lumix_sync_write = [
+        (0x0068, b"\x01"),
+        (0x0068, b"\x02"),
+        (0x0068, b"\x04"),
+        (0x0068, b"\x05"),
+        (0x0068, b"\x05"),
+        (0x0068, b"\x06"),
+        (0x0068, b"\x05"),
+        (0x0068, b"\x05"),
+        # (0x0068, bytes.fromhex("04")),
+        # (0x0068, bytes.fromhex("05")),
+    ]
+    await write_list(lumix_sync_write)
+
+    lumix_sync_write_toggle_record = [
+        (0x0068, b"\x06"),
+        (0x0068, b"\x07"),
+    ]
+    # Write to 0x0068 00 to 05 sometimes raises notification 0x006a with value 00
+
+    # Take a picture via Lumix Sync sends 04 and 05 to 0x0068
+
     # again lumix_sync_attribute_no_found_reads
     lumix_sync_reads = [
         0x007A,
     ]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    # logger.info(
+    #     "%s",
+    #     pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    # )
 
     lumix_sync_write = [
         (0x0072, 0xC0019D),
@@ -288,7 +434,10 @@ async def main():
         0x0076,
     ]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
 
     # notification: 0x008c, 88,88,9c with values 1,2,4,1
     lumix_sync_reads = [
@@ -296,25 +445,37 @@ async def main():
         0x078,
     ]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
 
     # blob_read 0x076 offset 56
 
     lumix_sync_reads = [0x009E, 0x00A2, 0x00A4]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
 
     # blob_read 0x00a4 offset 56
 
     lumix_sync_reads = [0x0094, 0x0096, 0x0098]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
 
     # blob_read 0x0098 offset 56
 
     lumix_sync_reads = [0x009A, 0x00A8, 0x00AA, 0x0096]
     ret = await read_list(lumix_sync_reads)
-    pprint.pprint(["0x" + "".join([hex(x) for x in lumix_sync_reads]), ret])
+    logger.info(
+        "%s",
+        pprint.pformat(["0x" + "".join([f"{x:04x}" for x in lumix_sync_reads]), ret]),
+    )
 
     lumix_sync_write = [
         (0x0090, 0xE8070B),
@@ -329,6 +490,8 @@ async def main():
 
     # notification 0x0046 and 0x008c value 1 and 2
 
+    # write 0x01 to 0x004a maybe connects to wifi
+
     # ret = await client.read_gatt_char(0x007A - 1)
     # print(f"0x007a: {ret}")
 
@@ -337,9 +500,25 @@ async def main():
     #     ret = await client.read_gatt_char(characteristic.handle-1)
     #     print("0x"+''.join([f'{x:x}' for x in ret]))
 
+    # Capture
+    # await client.write_gatt_char(0x0068 - 1, 0x02, response=True)
+    # await client.write_gatt_char(0x0068 - 1, 0x02, response=True)
+    lumix_sync_write = [
+        (0x0068, b"\x01"),
+        (0x0068, b"\x02"),
+        (0x0068, b"\x04"),
+        (0x0068, b"\x05"),
+        (0x0068, b"\x04"),
+        (0x0068, b"\x05"),
+        (0x0068, b"\x04"),
+        (0x0068, b"\x05"),
+    ]
+    await write_list(lumix_sync_write)
+
     # ret = await client.read_gatt_char(0x007a-1)
     # print(f"0x007a: {ret}")
     # TODO: camera remains in "Connecting to Bluetooth / Wi-Fi" state with a waiting circle here.
+    logger.info("wait for disconnect")
     await disconnected_event.wait()
 
     # for key in service_collection.characteristics:

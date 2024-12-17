@@ -1,4 +1,3 @@
-import logging
 import threading
 import traceback
 import xml.etree.ElementTree
@@ -20,14 +19,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-import LumixG9IIRemoteControl.LumixG9IIRemoteControl
-from LumixG9IIRemoteControl.LumixG9IIRemoteControl import (
+import LumixG9IIRemoteControl.LumixG9IIWiFiControl
+from LumixG9IIRemoteControl.LumixG9IIWiFiControl import (
     didl_object_list_to_camera_content_list,
     find_lumix_camera_via_sspd,
 )
 
+from ..camera_types import CameraRequestFilterDict
 from ..configure_logging import logger
-from ..types import CameraRequestFilterDict
 from .NoRaise import NoRaiseMixin
 
 
@@ -98,7 +97,7 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         self.setLayout(lv)
 
-        self.g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(
+        self.g9ii = LumixG9IIRemoteControl.LumixG9IIWiFiControl.LumixG9IIWiFiControl(
             # host='mlbel',
             # auto_connect=True
         )

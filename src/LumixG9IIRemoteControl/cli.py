@@ -1,7 +1,7 @@
 import argparse
 
 import LumixG9IIRemoteControl.configure_logging
-import LumixG9IIRemoteControl.LumixG9IIRemoteControl
+import LumixG9IIRemoteControl.LumixG9IIWiFiControl
 from LumixG9IIRemoteControl.parser import add_general_options_to_parser
 
 from .configure_logging import logger
@@ -33,8 +33,9 @@ if __name__ == "__main__":
 
             c = Config()
             c.InteractiveShellApp.exec_lines = [
-                "import LumixG9IIRemoteControl.LumixG9IIRemoteControl",
-                f"g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host={args.hostname})",
+                "import LumixG9IIRemoteControl.LumixG9IIWiFiControl",
+                "import LumixG9IIRemoteControl.LumixG9IIBluetoothControl"
+                f"g9ii = LumixG9IIRemoteControl.LumixG9IIWiFiControl.LumixG9IIRemoteControl(auto_connect={args.auto_connect}, host={args.hostname})",
             ]
             c.InteractiveShellApp.hide_initial_ns = False
 
@@ -44,7 +45,7 @@ if __name__ == "__main__":
         else:
             import IPython
 
-            g9ii = LumixG9IIRemoteControl.LumixG9IIRemoteControl.LumixG9IIRemoteControl(
+            g9ii = LumixG9IIRemoteControl.LumixG9IIWiFiControl.LumixG9IIWiFiControl(
                 auto_connect=args.auto_connect, host=args.hostname
             )
             IPython.embed(header=header)

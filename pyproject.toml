@@ -7,10 +7,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name= "LumixG9IIRemoteControl"
 authors = [{name = "Thomas Wagner", email = "wagner-thomas@gmx.at"},]
-description = "Pure Python remote control scripts for Panasonic Lumix DC-G9II"
+description = "Python remote control for Panasonic Lumix DC-G9II/G9M2"
 readme = "README.md"
 license = {file = "LICENSE.md"}
-keywords = ["Panasonic Lumix G9II",]
+keywords = ["Panasonic Lumix G9II","Remote Control"]
 classifiers = [
 	"Development Status :: 3 - Alpha",
 	"License :: OSI Approved",

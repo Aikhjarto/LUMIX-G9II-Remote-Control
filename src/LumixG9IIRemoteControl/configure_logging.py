@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 
 logging.basicConfig()
 
@@ -7,7 +9,12 @@ formatter = logging.Formatter(
     datefmt="%Y-%m-%d,%H:%M:%S",
 )
 
-fh = logging.FileHandler("LumixG9IIRemoteControl.log")
+logfilename = f"LumixG9IIRemoteControl{int(time.time())}.log"
+if os.path.islink("LumixG9IIRemoteControl.log"):
+    os.unlink("LumixG9IIRemoteControl.log")
+os.symlink(logfilename, "LumixG9IIRemoteControl.log")
+
+fh = logging.FileHandler(logfilename)
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 
