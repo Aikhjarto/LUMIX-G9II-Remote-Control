@@ -21,7 +21,8 @@ class Server(socketserver.ThreadingTCPServer):
     """
 
     # allow for rapid stop/start cycles during debugging
-    # Assumption is, that no other process will start listening on `port` during restart of this script
+    # Assumption is, that no other process will start listening
+    # on `port` during restart of this script
     allow_reuse_address = True
 
     # allow IPv4 and IPv6

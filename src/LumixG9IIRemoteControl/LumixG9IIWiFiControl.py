@@ -1,6 +1,5 @@
-import argparse
-import logging
 import pprint
+import struct
 import subprocess
 import sys
 import threading
@@ -250,6 +249,31 @@ def didl_object_list_to_camera_content_list(
     return lst
 
 
+def hash_wifi(req_acc_g_str: str) -> Tuple[str, str]:
+    req_acc_g_bytes = bytes.fromhex(req_acc_g_str)
+    req_acc_g_int = struct.unpack("<I", req_acc_g_bytes)[0]
+
+    value = bytearray(36)
+    for i, x in enumerate(
+        [
+            892617780,
+            808663348,
+            808529965,
+            808529200,
+            942485552,
+            758198320,
+            809579056,
+            842018864,
+            942748980,
+        ]
+    ):
+        value[i * 4 : (i + 4) * 4] = struct.pack(">I", req_acc_g_int ^ x)
+
+    value2 = struct.pack(">I", req_acc_g_int ^ 4281684038)
+
+    return "".join([f"{x:02x}" for x in value]), "".join([f"{x:02x}" for x in value2])
+
+
 class LumixG9IIWiFiControl:
 
     def __init__(
@@ -460,13 +484,15 @@ class LumixG9IIWiFiControl:
                 headers=self._headers,
                 params={"mode": "accctrl", "type": "req_acc_g"},
             )
-            self._parse_return_value_from_camera(ret)
+            req_acc_g_str = self._parse_return_value_from_camera(ret)[0]
 
-            value = (
-                "e4bf9a00e1b8e700e1baee19e1baf304e9a6"
-                "ee04fcbaee04e1caec04e3bbee04e9baeb00"
-            )
-            value2 = "2ebe8e72"
+            value, value2 = hash_wifi(req_acc_g_str)
+
+            # value = (
+            #     "e4bf9a00e1b8e700e1baee19e1baf304e9a6"
+            #     "ee04fcbaee04e1caec04e3bbee04e9baeb00"
+            # )
+            # value2 = "2ebe8e72"
 
             ret = requests.get(
                 self._cam_cgi,
@@ -481,7 +507,7 @@ class LumixG9IIWiFiControl:
 
             self._assert_ret_ok(ret)
             data = ret.text.strip().split(",")
-            assert data[1] == self.device_info_dict["friendlyName"]
+            assert data[1] == self.device_info_dict["friendlyName"], f'{data}: {data[1]} != {self.device_info_dict["friendlyName"]}'
             assert data[2] == "remote"
             assert data[3] == "open"
 
@@ -776,6 +802,7 @@ class LumixG9IIWiFiControl:
         item.set("func_type", "select")
         group = xml.etree.ElementTree.SubElement(item, "group")
         for cmd_value, text in (
+            ("164/256", "1.18")
             ("171/256", "1.2"),
             ("256/256", "1.4"),
             ("342/256", "1.6"),

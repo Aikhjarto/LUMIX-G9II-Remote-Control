@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import LumixG9IIRemoteControl.LumixG9IIBluetoothControl
 import LumixG9IIRemoteControl.LumixG9IIWiFiControl
 from LumixG9IIRemoteControl.LumixG9IIWiFiControl import (
     didl_object_list_to_camera_content_list,
@@ -101,6 +102,12 @@ class CameraWidget(QWidget, NoRaiseMixin):
             # host='mlbel',
             # auto_connect=True
         )
+
+        # self.g9 = (
+        #     LumixG9IIRemoteControl.LumixG9IIBluetoothControl.LumixG9IIBluetoothControl(
+        #         auto_connect=True
+        #     )
+        # )
 
         self._lens_dict_cache = {}
         zmq_receiver = ZMQReceiver(self)

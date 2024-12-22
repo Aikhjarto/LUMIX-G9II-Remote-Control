@@ -183,7 +183,8 @@ def main():
             "LumixG9IIRemoteControl.QtGUI.GUI", type(mw).__name__, "mw"
         )
 
-        # Let the interpreter run periodically to capture SIGINT/CTRL+C when GUI is in background
+        # Let the interpreter run periodically to capture SIGINT/CTRL+C
+        # when GUI is in background
         timer = QTimer()
         timer.start(200)
         timer.timeout.connect(lambda: None)
@@ -206,7 +207,7 @@ def main():
     except Exception as e:
         logger.exception(e)
         logger.error("AAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        logger.exception(traceback.format_exception())
+        logger.exception(e)
         raise e
 
 
