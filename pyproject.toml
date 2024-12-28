@@ -31,7 +31,8 @@ dependencies = [
 	"traitlets",
 	"pyzmq",
 	"qtconsole",
-	"bleak"]
+	"bleak",
+	"gpsdclient"]
 
 dynamic = ["version"]
 

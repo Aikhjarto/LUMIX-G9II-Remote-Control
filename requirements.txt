@@ -20,3 +20,4 @@ PySide6
 qtpy
 qtconsole
 bleak
+gpsdclient

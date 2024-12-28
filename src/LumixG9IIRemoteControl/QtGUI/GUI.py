@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 
 from ..configure_logging import logger
 from ..parser import add_general_options_to_parser
+from .CameraBluetoothControlWidget import CameraBluetoothControlWidget
 from .CameraWidget import CameraWidget
 from .ConsoleWidget import EmbedIPythonWidget
 from .PlayModeWidget import PlayModeWidget
@@ -52,6 +53,8 @@ class MainWindow(QMainWindow):
         self.status_widget = QLabel(text="Camera not connected")
 
         self.camera_widget = CameraWidget()
+
+        self.camera_bluetooth_control_widget = CameraBluetoothControlWidget()
 
         self.rec_mode_widget = RecModeWidget(self.camera_widget.g9ii)
         self.rec_mode_widget.setVisible(False)
@@ -96,6 +99,7 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.addWidget(self.camera_widget)
+        layout.addWidget(self.camera_bluetooth_control_widget)
 
         quit_button = QPushButton("Quit")
         quit_button.clicked.connect(self._quit)

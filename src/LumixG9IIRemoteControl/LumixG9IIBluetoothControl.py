@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import os
 import pprint
@@ -7,13 +8,13 @@ import struct
 import sys
 import threading
 import time
-import traceback
-from typing import Dict, List, Literal, Tuple
+from typing import Callable, Dict, List, Literal, Tuple
 
 import bleak
 import bleak.backends
 import bleak.backends.device
 import bleak.backends.service
+import zmq
 from bleak import BleakClient, BleakScanner, BLEDevice
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 from typing_extensions import Buffer
@@ -51,16 +52,6 @@ def device_filter(device: bleak.BLEDevice, advertisement_data: bleak.Advertiseme
         if advertisement_data.local_name.startswith("G9M2"):
             logger.info("Device Filter %s: %r", device.address, advertisement_data)
             return True
-
-
-def notification_handler(
-    characteristic: bleak.BleakGATTCharacteristic, data: bytearray
-):
-    """Simple notification handler which prints the data received."""
-    logger.info("Notification %s: %r", characteristic, data)
-
-
-disconnected_event = asyncio.Event()
 
 
 def hash_lumix_lab(value_7a_bytes: bytes) -> Tuple[bytearray, bytearray]:
@@ -107,23 +98,49 @@ def hash_lumix_sync(value_2a_bytes: bytes) -> Tuple[bytearray, bytearray]:
 
 class LumixG9IIBluetoothControl:
 
-    def __init__(self, auto_connect=False, send_gps_data=False):
+    def __init__(
+        self,
+        auto_connect=False,
+        send_gps_data: bool = False,
+        gpsd_hostname: str = None,
+        loop: asyncio.AbstractEventLoop = None,
+        as_lumix_sync: bool = True,
+        notification_callback: Callable[
+            [bleak.BleakGATTCharacteristic, bytearray], None
+        ] = None,
+        disconnect_callback: Callable[
+            [
+                bleak.BleakClient,
+            ],
+            None,
+        ] = None,
+    ):
         self._device: bleak.backends.device.BLEDevice = None
         self._client: BleakClient = None
         self._service_collection: bleak.backends.service.BleakGATTServiceCollection = (
             None
         )
+
+        self._custom_disconnect_callback = disconnect_callback
+        self._notification_callbacks = []
+        if callable(notification_callback):
+            self._notification_callbacks.append(notification_callback)
+
+        self.as_lumix_sync: bool = as_lumix_sync
         self._logged_in: bool = False
 
-        self.gps_packet_header = 0x5486AF20
+        # self.disconnected_event = asyncio.Event()
 
-        self.auto_connect = auto_connect
-        # TODO: run self.connect in background
-        self._connect_lock = threading.Lock()
         self._loop_lock = threading.Lock()
-        self._loop = asyncio.new_event_loop()
+        if loop:
+            self._loop: asyncio.AbstractEventLoop = loop
+        else:
+            self._loop = asyncio.new_event_loop()
 
-        self._send_gps_data = send_gps_data
+        # store values that have been read from and written to camera
+        self._read_registers_buffer: Dict[int, Buffer] = dict()
+        self._write_registers_buffer: Dict[int, Buffer] = dict()
+        self._notification_buffer: Dict[int, (datetime.datetime, Buffer)] = dict()
 
         # if self.auto_connect:
         # try:
@@ -133,11 +150,27 @@ class LumixG9IIBluetoothControl:
         # self._task = self._loop.create_task(self.autoconnect_periodic_coroutine())
         # asyncio.to_thread(self._task)
         # if auto_connect:
+
+        self._zmq_context = zmq.Context()
+        self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
+        self._zmq_socket.connect("tcp://localhost:5558")
+        self._zmq_thd = threading.Thread(
+            target=self._zmq_consumer_function, daemon=True
+        )
+        self._zmq_thd.start()
+
+        # background thread to constantly search for camera and connects
+        self.auto_connect = auto_connect
+        # self._connect_lock = threading.Lock()
         self._auto_connect_thread_handle = threading.Thread(
             target=self._autoconnect_thread_function, daemon=True
         )
         self._auto_connect_thread_handle.start()
 
+        # transfer position data from local device to camera
+        self.gps_packet_header = 0x5486AF20
+        self.send_gps_data: bool = send_gps_data
+        self.gpsd_hostname: str = gpsd_hostname
         self._gps_thread_handle = threading.Thread(
             target=self.gps_thread_function, daemon=True
         )
@@ -145,10 +178,47 @@ class LumixG9IIBluetoothControl:
 
         # self.autoconnect_task = asyncio.create_task(self.autoconnect_periodic_coroutine())
 
+    def __str__(self):
+        data = f"{type(self).__name__}"
+        if self._logged_in:
+            data += ", logged in"
+        elif self._client and self._client.is_connected:
+            data += ", connected"
+        else:
+            data += ", not connected"
+        return data
+
+    def __repr__(self):
+        data = self.__str__()
+        return f"{data}, {self._read_registers_buffer}"
+
     async def autoconnect_periodic_coroutine(self):
         while True:
             await self.connect()
             await asyncio.sleep(2)
+
+    def _publish_state_change(self, typ: str, data):
+        logger.error("publish %s, %s", typ, data)
+        self._zmq_socket.send_pyobj({"type": typ, "data": data}, zmq.NOBLOCK)
+
+    def _zmq_consumer_function(self):
+        while True:
+            try:
+                event = self._zmq_socket.recv_pyobj()
+                logger.info("Received via zmq: %s", event)
+            except Exception as e:
+                logger.exception(e)
+
+    @property
+    def send_gps_data(self):
+        return self._send_gps_data
+
+    @send_gps_data.setter
+    def send_gps_data(self, value):
+        # Lumix Lab enable GPS send 0x008e value 0x01 followed by notification 0x008c with value 0x01
+        # Lumix Lab disable GPS send 0x008e value 0x02 followed by notification 0x008c with value 0x02
+        # The data is sent periodically via handles 0x003e or 0x008a
+        self._send_gps_data = bool(value)
 
     def gps_thread_function(self):
         if hasattr(sys, "getandroidapilevel"):
@@ -158,31 +228,65 @@ class LumixG9IIBluetoothControl:
             droid = android.Android()
             droid.startLocating()
 
-            last_time = time.time()
+            timestamp = 0.0
             while True:
-                event = droid.eventWaitFor("location", 10000)
-                try:
-                    provider = event.result["data"]["gps"]["provider"]
-                    if provider == "gps":
-                        lat = str(event["data"]["gps"]["latitude"])
-                        lon = str(event["data"]["gps"]["longitude"])
-                        logger.debug("lat: %s lng: %s", lat, lon)
-                        self.ensure_connected()
-                        self._loop.run_forever(self.send_gps_location(lat, lon))
-                        time.sleep(max(0, (5 - time.time() - last_time)))
-                        last_time = time.time()
-                    else:
-                        continue
-                except KeyError as e:
-                    logger.exception(e)
+                time.sleep(max(0, (10 - time.time() - timestamp)))
+                timestamp = time.time()
+                if self._logged_in and self._send_gps_data:
+                    event = droid.eventWaitFor("location", 10000)
+                    try:
+                        provider = event.result["data"]["gps"]["provider"]
+                        if provider == "gps":
+                            lat = str(event["data"]["gps"]["latitude"])
+                            lon = str(event["data"]["gps"]["longitude"])
+                            logger.debug("lat: %s lng: %s", lat, lon)
+                            self.ensure_connected()
+                            self._loop.run_forever(self._send_gps_location(lat, lon))
+                            last_time = time.time()
+                        else:
+                            continue
+                    except KeyError as e:
+                        logger.exception(e)
+
+        elif self.gpsd_hostname:
+            import gpsdclient
+
+            timestamp = 0.0
+            while True:
+                time.sleep(max(0, (10 - time.time() - timestamp)))
+                timestamp = time.time()
+                if self._logged_in and self._send_gps_data:
+                    try:
+                        with gpsdclient.GPSDClient(
+                            host=self.gpsd_hostname, timeout=3
+                        ) as client:
+                            for result in client.dict_stream(
+                                convert_datetime=True, filter=["TPV"]
+                            ):
+                                lat = result.get("lat", None)
+                                lon = result.get("lon", None)
+
+                                if lat is None or lon is None:
+                                    time.sleep(max(0, (10 - time.time() - last_time)))
+                                    continue
+
+                                logger.debug("lat: %s lng: %s", lat, lon)
+                                with self._loop_lock:
+                                    self._loop.run_until_complete(
+                                        self._send_gps_location(lat, lon)
+                                    )
+                    except Exception as e:
+                        logger.exception(e)
 
         else:
             # location via IP adress
             import geocoder
             import geocoder.api
 
-            last_time = time.time()
+            timestamp = 0.0
             while True:
+                time.sleep(max(0, (10 - time.time() - timestamp)))
+                timestamp = time.time()
                 if self._logged_in and self._send_gps_data:
                     try:
                         a = geocoder.arcgis("me")
@@ -192,7 +296,7 @@ class LumixG9IIBluetoothControl:
                         )
                         with self._loop_lock:
                             self._loop.run_until_complete(
-                                self.send_gps_location(
+                                self._send_gps_location(
                                     location.latitude, location.longitude
                                 )
                             )
@@ -201,9 +305,6 @@ class LumixG9IIBluetoothControl:
                             "Geocoder could not get location, but got %s", location
                         )
                         logger.exception(e)
-
-                time.sleep(max(0, (10 - (time.time() - last_time))))
-                last_time = time.time()
 
     def _autoconnect_thread_function(self):
 
@@ -230,51 +331,72 @@ class LumixG9IIBluetoothControl:
                 # del loop
                 time.sleep(10)
                 # TODO: better than polling every 10 seconds would be using the disconnect callback
-                # loop.call_later(disconnected_event.wait())
+                # loop.call_later(self.disconnected_event.wait())
                 # loop.run_in_executor
             except Exception as e:
                 logger.exception(e)
 
-    async def _send_gps_location_task(self):
-        if hasattr(sys, "getandroidapilevel"):
-            # we are on android, so start GPS
-            import android
+    # async def _send_gps_location_task(self):
+    #     if hasattr(sys, "getandroidapilevel"):
+    #         # we are on android, so start GPS
+    #         import android
 
-            droid = android.Android()
-            droid.startLocating()
+    #         droid = android.Android()
+    #         droid.startLocating()
 
-            last_time = time.time()
-            while True:
-                event = droid.eventWaitFor("location", 10000)
-                try:
-                    provider = event.result["data"]["gps"]["provider"]
-                    if provider == "gps":
-                        lat = str(event["data"]["gps"]["latitude"])
-                        lon = str(event["data"]["gps"]["longitude"])
-                        logger.debug("lat: %s lng: %s", lat, lon)
-                        await self.send_gps_location(lat, lon)
-                        await asyncio.sleep(max(0, (5 - time.time() - last_time)))
-                        last_time = time.time()
-                    else:
-                        continue
-                except KeyError as e:
-                    logger.exception(e)
+    #         last_time = time.time()
+    #         while True:
+    #             event = droid.eventWaitFor("location", 10000)
+    #             try:
+    #                 provider = event.result["data"]["gps"]["provider"]
+    #                 if provider == "gps":
+    #                     lat = str(event["data"]["gps"]["latitude"])
+    #                     lon = str(event["data"]["gps"]["longitude"])
+    #                     logger.debug("lat: %s lng: %s", lat, lon)
+    #                     await self._send_gps_location(lat, lon)
+    #                     await asyncio.sleep(max(0, (5 - time.time() - last_time)))
+    #                     last_time = time.time()
+    #                 else:
+    #                     continue
+    #             except KeyError as e:
+    #                 logger.exception(e)
 
-        else:
-            # location via IP adress
-            import geocoder
+    #     elif self.gpsd_hostname:
+    #         import gpsdclient
 
-            last_time = time.time()
-            while True:
-                try:
-                    location = geocoder.ip("me")
-                    lat, lon = location.latlng
-                    logger.debug("lat: %s lng: %s", lat, lon)
-                    await self.send_gps_location(lat, lon)
-                    await asyncio.sleep(max(0, (5 - time.time() - last_time)))
-                    last_time = time.time()
-                except Exception as e:
-                    logger.exception(e)
+    #         last_time = time.time()
+    #         try:
+    #             with gpsdclient.GPSDClient(host=self.gpsd_hostname) as client:
+    #                 for result in client.dict_stream(
+    #                     convert_datetime=True, filter=["TPV"]
+    #                 ):
+    #                     lat = result.get("lat", None)
+    #                     lon = result.get("lon", None)
+    #                     logger.debug("lat: %s lng: %s", lat, lon)
+    #                     if lat is not None and lon is not None:
+    #                         await self._send_gps_location(lat, lon)
+
+    #             await asyncio.sleep(max(0, (5 - time.time() - last_time)))
+    #             last_time = time.time()
+
+    #         except Exception as e:
+    #             logger.exception(e)
+    #     else:
+
+    #         # location via IP adress
+    #         import geocoder
+
+    #         last_time = time.time()
+    #         while True:
+    #             try:
+    #                 location = geocoder.ip("me")
+    #                 lat, lon = location.latlng
+    #                 logger.debug("lat: %s lng: %s", lat, lon)
+    #                 await self._send_gps_location(lat, lon)
+    #                 await asyncio.sleep(max(0, (5 - time.time() - last_time)))
+    #                 last_time = time.time()
+    #             except Exception as e:
+    #                 logger.exception(e)
 
     async def find_device(self, timeout=30):
 
@@ -287,229 +409,285 @@ class LumixG9IIBluetoothControl:
             raise RuntimeError("could not find device")
         else:
             logger.info("Found device %r", self._device)
+            self._publish_state_change("connection_status", "device found")
+
+    def notification_handler(
+        self, characteristic: bleak.BleakGATTCharacteristic, data: bytearray
+    ):
+        logger.info("Notification %s: %r", characteristic, data)
+        self._notification_buffer[characteristic.handle] = (
+            datetime.datetime.now(),
+            data,
+        )
+        for callback in self._notification_callbacks:
+            callback(characteristic, data)
 
     def disconnected_callback(self, client):
         logger.info("Disconnected callback called!")
+        if callable(self._custom_disconnect_callback):
+            self._custom_disconnect_callback(client)
         # delete handles which are only valid during a connection
-        self._logged_in = False
+        self.logged_in = False
         self._device = None
         self._client = None
         self._service_collection = None
-        for task in asyncio.all_tasks(self._loop):
-            task.cancel()
-        # TODO stop futures too to avoid 'RuntimeError: Event loop stopped before Future completed.'
-        self._loop.stop()
+        # tasks = asyncio.all_tasks(self._loop)
+        # for task in tasks:
+        #     task.cancel()
+        # with self._loop_lock:
+        #     self._loop.run_until_complete(
+        #         asyncio.gather(*tasks, return_exceptions=True)
+        #     )
+        # # TODO stop futures too to avoid 'RuntimeError: Event loop stopped before Future completed.'
+        # self._loop.stop()
 
-        disconnected_event.set()
+        # self.disconnected_event.set()
 
     def ensure_connected(self, **kwargs):
-        logger.debug("ensure_connected")
-        if not self._service_collection:
+        logger.info("ensure_connected")
+        if not self._service_collection or not self._client.is_connected:
             with self._loop_lock:
                 self._loop.run_until_complete(self.connect(**kwargs))
+        # self.ensure_0x008e_state_matches_send_gps_data()
+
+    def ensure_0x008e_state_matches_send_gps_data(self):
+        if self._send_gps_data:
+            data = b"\x01"
+        else:
+            data = b"\x02"
+
+        if self._write_registers_buffer.get(0x008E) != data:
+            self.write_handles([(0x008E, data)])
 
     @property
     def is_connected(self):
         return bool(self._service_collection)
 
     @property
-    def is_logged_in(self):
+    def logged_in(self):
         return self._logged_in
 
-    async def connect(
-        self, connect_timeout=20, service_discovery_timeout=30, as_lumix_sync=False
-    ):
-        with self._connect_lock:
-            self._service_collection: (
-                bleak.backends.service.BleakGATTServiceCollection
-            ) = None
+    @logged_in.setter
+    def logged_in(self, status):
+        if status:
+            connection_status = "logged_in"
+        else:
+            connection_status = "disconnected"
+        self._publish_state_change("connection_status", connection_status)
+        self._logged_in = bool(status)
 
-            while not self._service_collection:
-                if not self._device:
-                    try:
-                        await self.find_device()
-                    except RuntimeError as e:
-                        logger.exception(e)
-                        continue
+    async def connect(self, connect_timeout=20, service_discovery_timeout=30):
+        # with self._connect_lock:
+        self._service_collection: bleak.backends.service.BleakGATTServiceCollection = (
+            None
+        )
 
-                self._client = BleakClient(
-                    self._device,
-                    disconnected_callback=self.disconnected_callback,
-                    timeout=connect_timeout,
-                )
-                logger.info("Connecting to device %s", self._device)
-                await self._client.disconnect()
+        while not self._service_collection:
+            if not self._device:
                 try:
-                    await self._client.connect()
-                except bleak.exc.BleakDeviceNotFoundError:
-                    self._device = None
-                    continue
-                except bleak.exc.BleakError as e:
+                    await self.find_device()
+                    await asyncio.sleep(1)
+                except RuntimeError as e:
                     logger.exception(e)
-                    logger.error("e.args: %s", e.args)
-                    if re.match("^device (.*) not found$", e.args[0]):
-                        self._device = None
-                    continue
-                except TimeoutError:
                     continue
 
-                logger.info(
-                    "Connected %s, %r. Wait for up to %s seconds for service collection to be populated.",
-                    self._client.is_connected,
-                    self._client,
-                    service_discovery_timeout,
-                )
+            self._client = BleakClient(
+                self._device,
+                disconnected_callback=self.disconnected_callback,
+                timeout=connect_timeout,
+            )
+            logger.info("Connecting to device %s", self._device)
+            try:
+                if self._client.is_connected:
+                    await self._client.disconnect()
+                await self._client.connect()
+            except bleak.exc.BleakDeviceNotFoundError:
+                self._device = None
+                continue
+            except bleak.exc.BleakError as e:
+                if re.match("^device (.*) not found$", e.args[0]):
+                    logger.error("%s; resetting device handle", e.args[0])
+                    self._device = None
+                else:
+                    logger.exception(e)
+                continue
+            except TimeoutError:
+                continue
 
-                # wait for service collection to be populated
-                time_start = time.time()
-                while (
-                    self._client.is_connected
-                    and not self._service_collection
-                    and time.time() - time_start < service_discovery_timeout
-                ):
-                    time.sleep(1)
-                    try:
-                        self._service_collection: bleak.BleakGATTServiceCollection = (
-                            self._client.services
-                        )
-                    except (
-                        bleak.BleakError,
-                        asyncio.exceptions.CancelledError,
-                        TimeoutError,
-                        TypeError,
-                    ) as e:
-                        logger.exception(e)
-                        if not self._client.is_connected:
-                            raise RuntimeError
+            logger.info(
+                "Connected %s, %r. Wait for up to %s seconds for service collection to be populated.",
+                self._client.is_connected,
+                self._client,
+                service_discovery_timeout,
+            )
 
-            logger.info("Connected %s, %r", self._client.is_connected, self._client)
-
-            readable_characteristics = []
-            notify_characteristics = []
-            writable_characteristics = []
-            indicate_characteristics = []
-            for (
-                key,
-                characteristic,
-            ) in self._service_collection.characteristics.items():
-                characteristic: bleak.BleakGATTCharacteristic
-                logger.debug(
-                    "Characteristic %s",
-                    pprint.pformat(
-                        {
-                            "handle_int": characteristic.handle,
-                            "handle_hex": f"0x{characteristic.handle:04x}",
-                            "descriptors": characteristic.descriptors,
-                            "description": characteristic.description,
-                            "service_uuid": characteristic.service_uuid,
-                            "uuid": characteristic.uuid,
-                            "properties": characteristic.properties,
-                        }
-                    ),
-                )
-
-                if "read" in characteristic.properties:
-                    readable_characteristics.append(characteristic)
-
-                if "notify" in characteristic.properties:
-                    notify_characteristics.append(characteristic)
-
-                if "write" in characteristic.properties:
-                    writable_characteristics.append(characteristic)
-
-                if "indicate" in characteristic.properties:
-                    indicate_characteristics.append(characteristic)
-
-            # setup notifications
-            for idx, characteristic in enumerate(notify_characteristics):
-                if characteristic.handle in (0x039, 0x003F, 0x045, 0x069):
-                    # some services are announces by the camera, but they cannot be connected to
-                    logger.info(
-                        f"Notification {idx}/{len(notify_characteristics)-1} skipped for {characteristic}"
-                    )
-                    continue
+            # wait for service collection to be populated
+            time_start = time.time()
+            while (
+                self._client.is_connected
+                and not self._service_collection
+                and time.time() - time_start < service_discovery_timeout
+            ):
+                time.sleep(1)
                 try:
-                    await self._client.start_notify(
-                        characteristic, notification_handler
+                    self._service_collection: bleak.BleakGATTServiceCollection = (
+                        self._client.services
                     )
-                    logger.info(
-                        f"Notification {idx}/{len(notify_characteristics)-1} started for {characteristic}"
-                    )
-                except Exception as e:
-                    logger.exception(
-                        f"{idx}/{len(notify_characteristics)-1} notify: {e} for {characteristic}"
-                    )
+                except (
+                    bleak.BleakError,
+                    asyncio.exceptions.CancelledError,
+                    TimeoutError,
+                    TypeError,
+                ) as e:
+                    logger.exception(e)
+                    if not self._client.is_connected:
+                        raise RuntimeError
 
-            # login
-            if as_lumix_sync:
-                ret = await self.read_handles_coro([0x002A], auto_connect=False)
-                ret_int = struct.unpack("I", ret[0x002A])[0]
-                logger.info(f"0x{ret_int:08x}")
+        logger.info("Connected %s, %r", self._client.is_connected, self._client)
 
-                value2c, value2e = hash_lumix_sync(ret[0x002A])
+        readable_characteristics = []
+        notify_characteristics = []
+        writable_characteristics = []
+        indicate_characteristics = []
+        for (
+            key,
+            characteristic,
+        ) in self._service_collection.characteristics.items():
+            characteristic: bleak.BleakGATTCharacteristic
+            logger.debug(
+                "Characteristic %s",
+                pprint.pformat(
+                    {
+                        "handle_int": characteristic.handle,
+                        "handle_hex": f"0x{characteristic.handle:04x}",
+                        "descriptors": characteristic.descriptors,
+                        "description": characteristic.description,
+                        "service_uuid": characteristic.service_uuid,
+                        "uuid": characteristic.uuid,
+                        "properties": characteristic.properties,
+                    }
+                ),
+            )
+
+            if "read" in characteristic.properties:
+                readable_characteristics.append(characteristic)
+
+            if "notify" in characteristic.properties:
+                notify_characteristics.append(characteristic)
+
+            if "write" in characteristic.properties:
+                writable_characteristics.append(characteristic)
+
+            if "indicate" in characteristic.properties:
+                indicate_characteristics.append(characteristic)
+
+        # setup notifications
+        for idx, characteristic in enumerate(notify_characteristics):
+            if characteristic.handle in (0x039, 0x003F, 0x045, 0x069):
+                # some services are announces by the camera, but they cannot be connected to
                 logger.info(
-                    "Calculated value for 0x002C 0x"
-                    + "".join([f"{x:02x}" for x in value2c])
+                    f"Notification {idx}/{len(notify_characteristics)-1} skipped for {characteristic}"
+                )
+                continue
+            try:
+                await self._client.start_notify(
+                    characteristic, self.notification_handler
                 )
                 logger.info(
-                    "Calculated value for 0x002E 0x"
-                    + "".join([f"{x:02x}" for x in value2e])
+                    f"Notification {idx}/{len(notify_characteristics)-1} started for {characteristic}"
+                )
+            except Exception as e:
+                logger.exception(
+                    f"{idx}/{len(notify_characteristics)-1} notify: {e} for {characteristic}"
                 )
 
-                lumix_sync_write = [
-                    (0x002C, value2c),
-                    (0x002E, value2e),
-                ]
-                await self.write_handles_coro(lumix_sync_write)
+        # login
+        if self.as_lumix_sync:
+            ret = await self.read_handles_coro([0x002A], auto_connect=False)
+            ret_int = struct.unpack("I", ret[0x002A])[0]
+            logger.info(f"0x{ret_int:08x}")
 
-                ret = await self.read_handles_coro([0x0036], auto_connect=False)
-                self.camera_name = decode_nullterminated_bytes(ret[0x0036])
+            value2c, value2e = hash_lumix_sync(ret[0x002A])
+            logger.info(
+                "Calculated value for 0x002C 0x"
+                + "".join([f"{x:02x}" for x in value2c])
+            )
+            logger.info(
+                "Calculated value for 0x002E 0x"
+                + "".join([f"{x:02x}" for x in value2e])
+            )
 
-                ret = await self.read_handles_coro([0x0038], auto_connect=False)
-                # five times 0x002a
+            lumix_sync_write = [
+                (0x002C, value2c),
+                (0x002E, value2e),
+            ]
+            await self.write_handles_coro(lumix_sync_write)
 
-            else:
-                ret = await self.read_handles_coro([0x007A], auto_connect=False)
-                logger.debug("%s", ret)
-                ret_int = struct.unpack("I", ret[0x007A])[0]
-                logger.debug(f"0x007A: 0x{ret_int:08x}")
+            # notification 0x0046 with value 0x01 comes here
 
-                value72, value74 = hash_lumix_lab(ret[0x007A])
-                logger.debug(
-                    "Calculated value for 0x0072 0x"
-                    + "".join([f"{x:02x}" for x in value72])
-                )
-                logger.debug(
-                    "Calculated value for 0x0074 0x"
-                    + "".join([f"{x:02x}" for x in value74])
-                )
+            clock_data = self.calc_clock_data()
+            await self.write_handles_coro([(0x0044, clock_data)], auto_connect=False)
 
-                ret = await self.write_handles_coro(
-                    [(0x0072, value72)], response=False, auto_connect=False
-                )
-                ret = await self.write_handles_coro(
-                    [(0x0070, b"LUMIX LUT Creators APP 1.2.1\0\0\0\0")],
-                    response=False,
-                )
-                ret = await self.write_handles_coro(
-                    [(0x0074, value74)], response=False, auto_connect=False
-                )
+            ret = await self.read_handles_coro([0x0036], auto_connect=False)
+            self.camera_name = decode_nullterminated_bytes(ret[0x0036])
 
-                # Notifications 8c, 88, and 9c come here with values 1,2, and 1
-                ret = await self.read_handles_coro(
-                    [
-                        0x0076,
-                    ],
-                    auto_connect=False,
-                )
-                self.camera_name = decode_nullterminated_bytes(ret[0x0076])
+            ret = await self.read_handles_coro([0x0038], auto_connect=False)
+            # five times 0x002a
 
-                # Notification 0x0046 with value 0x01
+        else:
+            ret = await self.read_handles_coro([0x007A], auto_connect=False)
+            logger.debug("%s", ret)
+            ret_int = struct.unpack("I", ret[0x007A])[0]
+            logger.debug(f"0x007A: 0x{ret_int:08x}")
 
-                ret = await self.read_handles_coro([0x0078], auto_connect=False)
-                # 14 times value of 0x007A
+            value72, value74 = hash_lumix_lab(ret[0x007A])
+            logger.info(
+                "Calculated value for 0x0072 0x"
+                + "".join([f"{x:02x}" for x in value72])
+            )
+            logger.info(
+                "Calculated value for 0x0074 0x"
+                + "".join([f"{x:02x}" for x in value74])
+            )
 
-        self._logged_in = True
+            ret = await self.write_handles_coro(
+                [
+                    (0x0072, value72),
+                    (0x0070, b"LUMIX LUT Creators APP 1.2.1\0\0\0\0"),
+                    (0x0074, value74),
+                ],
+                response=False,
+                auto_connect=False,
+            )
+
+            # Notifications 0x008c, 0x0088, and 0x009c 0x0046 come here with values 1, 2, 1, and 1
+            # between read request and response of 0x0076
+            ret = await self.read_handles_coro(
+                [
+                    0x0076,
+                ],
+                auto_connect=False,
+            )
+            self.camera_name = decode_nullterminated_bytes(ret[0x0076])
+
+            ret = await self.read_handles_coro(
+                (
+                    0x0078,  # 14 times value of 0x007A
+                    0x009E,
+                    0x00A2,
+                    0x00A4,
+                    0x0094,  # camera model
+                    0x0096,  # firmware version
+                    0x0098,  # lens information
+                    0x009A,
+                    0x00A8,
+                    0x00AA,
+                    0x0086,  # memory card status
+                ),
+                auto_connect=False,
+            )
+
+        self.logged_in = True
         logger.info("Finished login")
 
     def disconnect(self):
@@ -542,6 +720,7 @@ class LumixG9IIBluetoothControl:
             else:
                 logger.info("Read %s", d)
                 i += 1
+                self._read_registers_buffer[handle] = d[handle]
         return d
 
     def write_handles(
@@ -565,7 +744,7 @@ class LumixG9IIBluetoothControl:
         i = 0
         logger.info("Writing %s", lst)
         while i < len(lst):
-            logger.info(f"Writing %d/%d: 0x{lst[i][0]:04x}", i, len(lst))
+            logger.debug(f"Writing %d/%d: 0x{lst[i][0]:04x}", i, len(lst))
             if auto_connect:
                 self.ensure_connected()
             handle, data = lst[i]
@@ -579,6 +758,7 @@ class LumixG9IIBluetoothControl:
                 self._service_collection = None
             else:
                 i += 1
+                self._write_registers_buffer[handle] = data
             if response:
                 logger.info("Write Response %s", d)
 
@@ -635,14 +815,11 @@ class LumixG9IIBluetoothControl:
         return decode_nullterminated_bytes(ret[0x0094])
 
     def get_lens(self):
-        with self._loop_lock:
-            ret = self._loop.run_until_complete(
-                self.read_handles_coro(
-                    [
-                        0x0098,
-                    ]
-                )
-            )
+        ret = self.read_handles(
+            [
+                0x0098,
+            ]
+        )
         return decode_nullterminated_bytes(ret[0x0098])
 
     def get_memory_card_status(self) -> Dict[Literal["SD1", "SD2", "SSD"], int]:
@@ -677,6 +854,9 @@ class LumixG9IIBluetoothControl:
     def get_0x009a(self) -> str:
         # b'5376\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
         # This is the same string as the second to last value in LumixG9IIWiFiControl.get_lens()
+        # 5676 for 12-60 f2.8-4
+        # 4608 for 42.5 f1.2
+        # 4352 for 25 f1.7
         ret = self.read_handles(
             [
                 0x009A,
@@ -745,37 +925,37 @@ class LumixG9IIBluetoothControl:
         )
         return decode_nullterminated_bytes(ret[0x0096])
 
-    def enable_accesspoint(self):
-        self.write_handles([(0x007C, b"\x01")])
-
     def activate_accesspoint(self):
-        self.write_handles([(0x004A, 0x01), (0x0030, 0x05)])
-        # notification 0x0088 with value 02 and 0x0032 with value 00 come here
+        if self.as_lumix_sync:
+            self.write_handles([(0x004A, 0x01), (0x0030, 0x05)])
+            # notification 0x0088 with value 02 and 0x0032 with value 00 come here
+        else:
+            self.write_handles([(0x007C, b"\x01")])
 
     def connect_to_accesspoint(self, essid: str):
         data = bytearray(32)
         essid_bytes = essid.encode()
         assert len(essid_bytes) < len(data)
         data[0 : len(essid_bytes)] = essid_bytes
-        self.write_handles([(0x004E, data), (0x004A, 0x03)])
+        self.write_handles([(0x004E, data), (0x004A, b"\x03")])
 
         # notification 0x004c with value 00 comes here when using lumix sync
 
-        self.write_handles([(0x004A, 0x02), (0x0030, 0x03)])
+        self.write_handles([(0x004A, b"\x02"), (0x0030, b"\x03")])
 
         # notification 0x0088 with value 02 and 0x0032 with value 00 come here
 
-    async def wifi5GHz(self, status: bool):
+    def wifi5GHz(self, status: bool):
         if status:
             value = b"\x02"
         else:
             value = b"\x01"
-        self.write_handles_coro([0x00A0, value], response=False)
+        self.write_handles([0x00A0, value], response=False)
 
     def write_0x007c(self):
         # Maybe Lumix Lab's Command for enable Accesspoint mode
         self.write_handles([(0x007C, b"\x01")])
-        # values 0, 1, and 2 can bet set. value 3 and 4 causes write command to hang 
+        # values 0, 1, and 2 can bet set. value 3 and 4 causes write command to hang
 
         # Maybe those notifications are abount disconnected clients
         # INFO:LumixG9IIRemoteControl.LumixG9IIBluetoothControl:Notification dcba3a74-80bc-4919-8ef4-0c9f99cc20dd (Handle: 109): Unknown: bytearray(b'\x01')
@@ -783,34 +963,37 @@ class LumixG9IIBluetoothControl:
         # INFO:LumixG9IIRemoteControl.LumixG9IIBluetoothControl:Notification 16726c35-52ef-4d00-868d-099549a90d9b (Handle: 155): Unknown: bytearray(b'\x01')
         # INFO:LumixG9IIRemoteControl.LumixG9IIBluetoothControl:Notification dcba3a74-80bc-4919-8ef4-0c9f99cc20dd (Handle: 109): Unknown: bytearray(b'\x03')
 
-    def write_0x0090(self):
-        # Lumix Lab writes to 0x0090 values like
-        # Value: e8070c10082a32003c00
-        # Value: e8070c10082c24003c00
-        # Value: e8070c10090a18003c00
-        # Value: e8070c10090c11003c00
-        # which suspiciesly look like 0x0040 writes by lumix sync
-        raise NotImplementedError
+    # def write_0x0090(self):
+    #     # Lumix Lab writes to 0x0090 values like
+    #     # Value: e8070c10082a32003c00
+    #     # Value: e8070c10082c24003c00
+    #     # Value: e8070c10090a18003c00
+    #     # Value: e8070c10090c11003c00
+    #     # which suspiciesly look like 0x0044 writes by lumix sync
+    #     raise NotImplementedError
 
-    def write_0x0044(self):
-        # Lumix Sync Write to 0x044 values like
-        # Value: e8070c0d0713153c0000
-        # Value: e8070c0d08060f3c0000
-        # Value: e8070c0d080a183c0000
-        # Value: e8070c0d080c213c0000
-        # Value: e8070c0f11030f3c0000
-        # Value: e8070c160e2b1b3c0000
-        # Value: e8070c160e2b1b3c0000
-        # Value: e8070c160e1b153c0000
-        # after which, it requests a new challenge response
-        raise NotImplementedError
+    # def write_0x0044(self):
+    #     # Lumix Sync Write to 0x0044 values like
+    #     # Value: e8070c0d0713153c0000
+    #     # Value: e8070c0d08060f3c0000
+    #     # Value: e8070c0d080a183c0000
+    #     # Value: e8070c0d080c213c0000
+    #     # Value: e8070c0f11030f3c0000
+    #     # Value: e8070c160e2b1b3c0000
+    #     # Value: e8070c160e2b1b3c0000
+    #     # Value: e8070c160e1b153c0000
+    #     # after which, it requests a new challenge response
+    #     raise NotImplementedError
 
-    def write_0x008e(self):
-        # Lumix Lab writes to 0x008e values like 0x02
-        raise NotImplementedError
+    # def write_0x008e(self):
 
-    async def send_gps_location(self, lon_deg, lat_deg):
-        # Lumix syncwrites continously (several times per second) 0x003e, with 16 bytes
+    #     # Lumix Lab enable GPS send 0x008e value 0x01 followed by notification 0x008c with value 0x01
+    #     # Lumix Lab disable GPS send 0x008e value 0x02 followed by notification 0x008c with value 0x02
+    #     # sometimes notification 0x0046 with value 1 follows, but 0x0046 seems to come regularily anway
+    #     raise NotImplementedError
+
+    async def _send_gps_location(self, lon_deg, lat_deg):
+        # Lumix sync writes continously (several times per second) 0x003e, with 16 bytes
         # maybe keep-alive pattern or GPS data
         # Excample value
         # 23af8654_cfd2d11c_9df39508_99014100
@@ -819,6 +1002,17 @@ class LumixG9IIBluetoothControl:
         # Fifth byte is incremented by small values every 10-th cycle
         # 9-th byte is noisy
         # 13-th byte is noisy
+
+        # Lumix Lab every four seconds write to 0x008a values like
+        # 0x58BB8A54_3FD4D11C_72EF9508_7C014100
+        # 0x5CBB8A54_3FD4D11C_71EF9508_7C014100
+        # 0x60BB8A54_3FD4D11C_71EF9508_7C014100
+        # 0x66BB8A54_41D4D11C_76EF9508_7C014100
+        # 0x6ABB8A54_41D4D11C_76EF9508_7C014100
+        # 0x01BD8A54_89DBD11C_11F69508_B1014100
+        # 0x0FBD8A54_29D4D11C_E8F49508_9A014100
+        # 0x14BD8A54_58D4D11C_CBF49508_98014100
+        # 0x15BD8A54_54D4D11C_CFF49508_98014100
 
         # print(struct.unpack('<iiii', data))
         # # (1418112864, 483513018, 144045045, 4260249)
@@ -836,23 +1030,39 @@ class LumixG9IIBluetoothControl:
         )
         await self.write_handles_coro([(0x003E, struct.pack("<iiii", *data))])
 
-    async def auto_clock_sync(self, status):
-        raise NotImplementedError
-        self.write_handles_coro([0x0090, 0xE8070C1009361B003C00])
-        # 7-th of 10 bytes change
+    def calc_clock_data(self):
 
-        # notification 92 and 46 with value 1 come here
+        # Value: e8070c170c170e003c00
+        # Value: e8070c170c1731003c00
+        # Value: e8070c170c173b003c00
+        # Data was 2024-12-23 ca 12:23:xx
+        # hex(12)= 0x0c
+        # hex(23)= 0x17
+        # hex(2024) = 0x07e8 # mirrored
+        # hex(60) = 0x3c # may be timezone
+        now = datetime.datetime.now()
+        data = struct.pack(
+            "<HBBBBBBh",
+            now.year,
+            now.month,
+            now.day,
+            now.hour,
+            now.minute,
+            now.second,
+            0,
+            round(-time.timezone / 60),
+        )
+        return data
 
-        # every four seconds write to 0x008a values like
-        # 0x58BB8A54_3FD4D11C_72EF9508_7C014100
-        # 0x5CBB8A54_3FD4D11C_71EF9508_7C014100
-        # 0x60BB8A54_3FD4D11C_71EF9508_7C014100
-        # 0x66BB8A54_41D4D11C_76EF9508_7C014100
-        # 0x6ABB8A54_41D4D11C_76EF9508_7C014100
-        # 0x01BD8A54_89DBD11C_11F69508_B1014100
-        # 0x0FBD8A54_29D4D11C_E8F49508_9A014100
-        # 0x14BD8A54_58D4D11C_CBF49508_98014100
-        # 0x15BD8A54_54D4D11C_CFF49508_98014100
+    def clock_sync(self):
+
+        data = self.calc_clock_data()
+        # Lumix Sync writes to 0x0044, wheras Lumix Lab Writes to 0x0090
+        if self.as_lumix_sync:
+            self.write_handles([0x0044, data])
+        else:
+            self.write_handles([0x0090, data])
+            # notification 0x0092 with value 1
 
 
 def decode_nullterminated_bytes(data: bytes):
@@ -870,7 +1080,7 @@ if __name__ == "__main__":
     c = Config()
     c.InteractiveShellApp.exec_lines = [
         "from LumixG9IIRemoteControl.LumixG9IIBluetoothControl import LumixG9IIBluetoothControl",
-        "g9 = LumixG9IIBluetoothControl(auto_connect = True)",
+        "g9bt = LumixG9IIBluetoothControl(auto_connect = True)",
     ]
     c.InteractiveShellApp.hide_initial_ns = False
     IPython.start_ipython(argv=[], local_ns=locals(), config=c)

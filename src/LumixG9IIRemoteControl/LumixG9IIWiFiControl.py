@@ -507,7 +507,9 @@ class LumixG9IIWiFiControl:
 
             self._assert_ret_ok(ret)
             data = ret.text.strip().split(",")
-            assert data[1] == self.device_info_dict["friendlyName"], f'{data}: {data[1]} != {self.device_info_dict["friendlyName"]}'
+            assert (
+                data[1] == self.device_info_dict["friendlyName"]
+            ), f'{data}: {data[1]} != {self.device_info_dict["friendlyName"]}'
             assert data[2] == "remote"
             assert data[3] == "open"
 
@@ -802,7 +804,7 @@ class LumixG9IIWiFiControl:
         item.set("func_type", "select")
         group = xml.etree.ElementTree.SubElement(item, "group")
         for cmd_value, text in (
-            ("164/256", "1.18")
+            ("164/256", "1.18"),
             ("171/256", "1.2"),
             ("256/256", "1.4"),
             ("342/256", "1.6"),

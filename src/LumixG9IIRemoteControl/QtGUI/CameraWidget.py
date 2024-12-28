@@ -103,12 +103,6 @@ class CameraWidget(QWidget, NoRaiseMixin):
             # auto_connect=True
         )
 
-        # self.g9 = (
-        #     LumixG9IIRemoteControl.LumixG9IIBluetoothControl.LumixG9IIBluetoothControl(
-        #         auto_connect=True
-        #     )
-        # )
-
         self._lens_dict_cache = {}
         zmq_receiver = ZMQReceiver(self)
         zmq_receiver.dataChanged.connect(self._zmq_consumer_function)
