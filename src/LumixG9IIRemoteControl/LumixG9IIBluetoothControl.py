@@ -47,13 +47,6 @@ def detection_callback(
     logger.debug("%s: %r", device.address, advertisement_data)
 
 
-def device_filter(device: bleak.BLEDevice, advertisement_data: bleak.AdvertisementData):
-    if advertisement_data and advertisement_data.local_name:
-        if advertisement_data.local_name.startswith("G9M2"):
-            logger.info("Device Filter %s: %r", device.address, advertisement_data)
-            return True
-
-
 def hash_lumix_lab(value_7a_bytes: bytes) -> Tuple[bytearray, bytearray]:
     format = ">I"
     value_7a_int = struct.unpack(format, value_7a_bytes)[0]
@@ -105,6 +98,7 @@ class LumixG9IIBluetoothControl:
         gpsd_hostname: str = None,
         loop: asyncio.AbstractEventLoop = None,
         as_lumix_sync: bool = True,
+        device_name_regex: str = None,
         notification_callback: Callable[
             [bleak.BleakGATTCharacteristic, bytearray], None
         ] = None,
@@ -120,6 +114,11 @@ class LumixG9IIBluetoothControl:
         self._service_collection: bleak.backends.service.BleakGATTServiceCollection = (
             None
         )
+
+        if device_name_regex:
+            self.device_name_regex = device_name_regex
+        else:
+            self.device_name_regex = "^G9M2.*"
 
         self._custom_disconnect_callback = disconnect_callback
         self._notification_callbacks = []
@@ -191,6 +190,16 @@ class LumixG9IIBluetoothControl:
     def __repr__(self):
         data = self.__str__()
         return f"{data}, {self._read_registers_buffer}"
+
+    def device_filter(
+        self, device: bleak.BLEDevice, advertisement_data: bleak.AdvertisementData
+    ):
+        if advertisement_data and advertisement_data.local_name:
+            if re.match(self.device_name_regex, advertisement_data.local_name):
+                logger.info("Device Filter %s: %r", device.address, advertisement_data)
+                return True
+            else:
+                logger.debug("Device Filter %s: %r", device.address, advertisement_data)
 
     async def autoconnect_periodic_coroutine(self):
         while True:
@@ -400,14 +409,13 @@ class LumixG9IIBluetoothControl:
 
     async def find_device(self, timeout=30):
 
-        logger.info("Searching for Bluetooth devices %s", device_filter)
-        self._device = await BleakScanner.find_device_by_filter(
-            device_filter, timeout=timeout, detection_callback=detection_callback
+        logger.info(
+            "Searching for Bluetooth devices matching %s", self.device_name_regex
         )
-        if self._device is None:
-            logger.error("could not find device")
-            raise RuntimeError("could not find device")
-        else:
+        self._device = await BleakScanner.find_device_by_filter(
+            self.device_filter, timeout=timeout, detection_callback=detection_callback
+        )
+        if self._device is not None:
             logger.info("Found device %r", self._device)
             self._publish_state_change("connection_status", "device found")
 
@@ -489,6 +497,9 @@ class LumixG9IIBluetoothControl:
                     await asyncio.sleep(1)
                 except RuntimeError as e:
                     logger.exception(e)
+                    continue
+
+                if not self._device:
                     continue
 
             self._client = BleakClient(
@@ -783,7 +794,9 @@ class LumixG9IIBluetoothControl:
         )
 
     def shutter_press(self):
-        self.write_handles([(0x0068, b"\x04")])
+        self.write_handles([(0x0068, b"\x01"),
+                            (0x0068, b"\x02"),
+                            (0x0068, b"\x04")])
 
     def shutter_release(self):
         self.write_handles([(0x0068, b"\x05")])

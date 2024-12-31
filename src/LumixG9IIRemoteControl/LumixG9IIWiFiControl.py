@@ -8,7 +8,7 @@ import traceback
 import urllib.parse
 import urllib.response
 import xml.etree.ElementTree
-from typing import Dict, List, Literal, Tuple, Union, Unpack, get_type_hints
+from typing import Dict, List, Literal, Tuple, Union, Unpack, get_type_hints, Set
 
 import defusedxml.ElementTree
 import requests
@@ -32,9 +32,10 @@ from .camera_types import (
 from .configure_logging import logger
 
 
-def find_lumix_camera_via_sspd(
+def find_lumix_cameras_via_sspd(
     return_hostname: bool = True,
-) -> List[Union[str, upnpy.ssdp.SSDPDevice.SSDPDevice]]:
+) -> Set[Union[str, upnpy.ssdp.SSDPDevice.SSDPDevice]]:
+    logger.info('Starting SSPD device discovery')
     upnp = upnpy.UPnP()
     devices = upnp.discover()
     hostnames = set()
@@ -47,7 +48,11 @@ def find_lumix_camera_via_sspd(
                 hostnames.add(split.hostname)
             else:
                 hostnames.add(device)
+    return hostnames
 
+def find_lumix_camera_via_sspd(**kwargs):
+
+    hostnames = find_lumix_cameras_via_sspd(**kwargs)
     if len(hostnames) == 0:
         raise RuntimeError("No camera found")
     elif len(hostnames) == 1:

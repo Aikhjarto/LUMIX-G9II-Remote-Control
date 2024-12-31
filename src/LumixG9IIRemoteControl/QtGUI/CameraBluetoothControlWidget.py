@@ -65,6 +65,18 @@ class CameraBluetoothControlWidget(QWidget, NoRaiseMixin):
         self.capture_button.pressed.connect(self.capture)
         lv.addWidget(self.capture_button)
 
+        lh = QHBoxLayout()
+        self.shutter_press_button = QPushButton("Shtr. Press")
+        self.shutter_press_button.setDisabled(True)
+        self.shutter_press_button.pressed.connect(self.shutter_press)
+        lh.addWidget(self.shutter_press_button)
+
+        self.shutter_release_button = QPushButton("Shtr. Release")
+        self.shutter_release_button.setDisabled(True)
+        self.shutter_release_button.pressed.connect(self.shutter_release)
+        lh.addWidget(self.shutter_release_button)
+        lv.addLayout(lh)
+
         self.toggle_video_button = QPushButton("Toggle Video Rec.")
         self.toggle_video_button.setDisabled(True)
         self.toggle_video_button.pressed.connect(self.toggle_video)
@@ -87,7 +99,7 @@ class CameraBluetoothControlWidget(QWidget, NoRaiseMixin):
         # connect to an accesspoint
         self.essid = QLineEdit()
         self.essid.setPlaceholderText("ESSID")
-        self.connect_to_accesspoint_button = QPushButton("Connect Accesspoint")
+        self.connect_to_accesspoint_button = QPushButton("Connect to Accesspoint")
         self.connect_to_accesspoint_button.setDisabled(True)
         self.connect_to_accesspoint_button.pressed.connect(self._connect_to_accesspoint)
         lh = QHBoxLayout()
@@ -132,6 +144,8 @@ class CameraBluetoothControlWidget(QWidget, NoRaiseMixin):
                 self.send_gps_postion_button.setEnabled(is_logged_in)
                 self.start_accesspoint_button.setEnabled(is_logged_in)
                 self.connect_to_accesspoint_button.setEnabled(is_logged_in)
+                self.shutter_release_button.setEnabled(is_logged_in)
+                self.shutter_press_button.setEnabled(is_logged_in)
                 self.cameraConnectionStateChanged.emit(bool(event["data"]))
             else:
                 logger.error("Unknown message, %s", event)
@@ -156,6 +170,14 @@ class CameraBluetoothControlWidget(QWidget, NoRaiseMixin):
     @_no_raise
     def capture(self):
         self.g9bt.capture()
+
+    @_no_raise
+    def shutter_press(self):
+        self.g9bt.shutter_press()
+
+    @_no_raise
+    def shutter_release(self):
+        self.g9bt.shutter_release()
 
     @_no_raise
     def toggle_video(self):

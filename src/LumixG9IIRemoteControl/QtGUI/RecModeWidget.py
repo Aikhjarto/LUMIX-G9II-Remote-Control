@@ -52,9 +52,14 @@ class RecModeWidget(QWidget):
 
         control_layout1 = QHBoxLayout()
 
-        caputer_button = QPushButton("Capture")
-        caputer_button.clicked.connect(
+        capture_start_button = QPushButton("Capture")
+        capture_start_button.clicked.connect(
             lambda _: self.cameraCommandRequest.emit({"function": "capture"})
+        )
+
+        capture_cancel_button = QPushButton("Capture Cancel")
+        capture_cancel_button.clicked.connect(
+            lambda _: self.cameraCommandRequest.emit({"function": "capture_cancel"})
         )
 
         self.rec_button = QPushButton("Rec. Video")
@@ -80,7 +85,8 @@ class RecModeWidget(QWidget):
         self.touchae_ctrl_button.clicked.connect(self._touchae_toggle)
 
         control_layout1 = QHBoxLayout()
-        control_layout1.addWidget(caputer_button)
+        control_layout1.addWidget(capture_start_button)
+        control_layout1.addWidget(capture_cancel_button)
         control_layout1.addWidget(self.rec_button)
         control_layout1.addWidget(oneshot_af_button)
 

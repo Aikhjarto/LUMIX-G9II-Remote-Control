@@ -9,6 +9,7 @@ from qtpy import QtCore, QtGui
 from qtpy.QtCore import Signal, Slot
 from qtpy.QtWidgets import (
     QApplication,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,11 +25,28 @@ import LumixG9IIRemoteControl.LumixG9IIWiFiControl
 from LumixG9IIRemoteControl.LumixG9IIWiFiControl import (
     didl_object_list_to_camera_content_list,
     find_lumix_camera_via_sspd,
+    find_lumix_cameras_via_sspd,
 )
 
 from ..camera_types import CameraRequestFilterDict
 from ..configure_logging import logger
 from .NoRaise import NoRaiseMixin
+
+
+class SSPDCameraFinder(QtCore.QObject):
+    camerasFound = Signal(object)
+
+    def start(self):
+        threading.Thread(target=self._execute, daemon=True).start()
+
+    def _execute(self):
+        while True:
+            try:
+                hostnames = find_lumix_cameras_via_sspd()
+                if hostnames:
+                    self.camerasFound.emit(hostnames)
+            except Exception as e:
+                logger.exception(e)
 
 
 class ZMQReceiver(QtCore.QObject):
@@ -67,33 +85,37 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
         self.semaphor = QtCore.QSemaphore()
 
-        find_camera_button = QPushButton("Find camera")
+        # find_camera_button = QPushButton("Find camera")
         connect_button = QPushButton("Connect")
         connect_button.setCheckable(True)
         self.connect_button = connect_button
 
-        self.camera_hostname = QLineEdit()
-        self.camera_hostname.setPlaceholderText("mlbel")
-        self.camera_hostname.returnPressed.connect(
-            lambda: self.connect_button.setEnabled(True)
-        )
-        find_camera_button.clicked.connect(self._find_camera)
+        # self.camera_hostname = QLineEdit()
+        # self.camera_hostname.setPlaceholderText("mlbel")
+        # self.camera_hostname.returnPressed.connect(
+        #     lambda: self.connect_button.setEnabled(True)
+        # )
+        # find_camera_button.clicked.connect(self._find_camera)
         connect_button.clicked.connect(self._connect)
+
+        self.camera_selection = QComboBox()
+        self.camera_selection.setEditable(True)
 
         self.play_rec_mode_button = QPushButton("Play/Rec")
         self.play_rec_mode_button.setEnabled(False)
         self.play_rec_mode_button.clicked.connect(self._play_rec_toggle)
 
         lv = QVBoxLayout()
-        lh = QHBoxLayout()
-        lh.addWidget(QLabel("Camera:"))
-        lh.addWidget(self.camera_hostname)
-        lv.addLayout(lh)
+        # lh = QHBoxLayout()
+        # lh.addWidget(QLabel("Camera:"))
+        # lh.addWidget(self.camera_hostname)
+        # lv.addLayout(lh)
 
         lh = QHBoxLayout()
-        lh.addWidget(find_camera_button)
+        # lh.addWidget(find_camera_button)
         lh.addWidget(connect_button)
         lv.addLayout(lh)
+        lv.addWidget(self.camera_selection)
         lv.addWidget(self.play_rec_mode_button)
 
         self.setLayout(lv)
@@ -107,6 +129,10 @@ class CameraWidget(QWidget, NoRaiseMixin):
         zmq_receiver = ZMQReceiver(self)
         zmq_receiver.dataChanged.connect(self._zmq_consumer_function)
         zmq_receiver.start()
+
+        self.camera_finder = SSPDCameraFinder()
+        self.camera_finder.camerasFound.connect(self._update_camera_list)
+        self.camera_finder.start()
 
         self.error_message = QMessageBox()
 
@@ -131,10 +157,11 @@ class CameraWidget(QWidget, NoRaiseMixin):
 
     def _connect(self):
 
-        if self.camera_hostname.isModified():
-            host_name = self.camera_hostname.text()
-        else:
-            host_name = self.camera_hostname.placeholderText()
+        # if self.camera_hostname.isModified():
+        #     host_name = self.camera_hostname.text()
+        # else:
+        #     host_name = self.camera_hostname.placeholderText()
+        host_name = self.camera_selection.currentText()
 
         if self.connect_button.isChecked():
             try:
@@ -181,6 +208,11 @@ class CameraWidget(QWidget, NoRaiseMixin):
             self.camera_hostname.setModified(True)
             self.connect_button.setEnabled(True)
 
+    def _update_camera_list(self, hostnames: List[str]):
+        self.camera_selection.clear()
+        for hostname in hostnames:
+            self.camera_selection.addItem(hostname)
+    
     @Slot(dict)
     def run_camcgi_from_dict(
         self, data: Dict[Literal["mode", "type", "value", "value2"], str]
